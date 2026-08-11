@@ -131,6 +131,21 @@ h4 {
 #screen_container[style*="display: block"] #screen {
     display: none !important;
 }
+/* Portrait viewports: rotate the (landscape) emulator canvas 90deg so it stays landscape.
+   Canvas box is 100vh x 100vw (landscape). Rotate 90deg clockwise around its
+   top-left corner, then shift left:100vw so the rotated box fills the viewport. */
+#screen_container[style*="display: block"].portrait-rotated #vga {
+    width: 100vh !important;
+    height: 100vw !important;
+    transform: rotate(90deg);
+    transform-origin: top left;
+    position: absolute;
+    top: 0;
+    left: 100vw;
+    object-fit: fill;
+    image-rendering: pixelated;
+    touch-action: none;
+}
 /* Runtime toolbar - only style when visible (JS sets display:block/none) */
 #runtime_options:not([style*="none"]) {
     position: fixed;

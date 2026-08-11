@@ -2527,6 +2527,17 @@ function init_ui(profile, settings, emulator)
     $("runtime_infos").style.display = "none";
     $("screen_container").style.display = "block";
 
+    // Keep the emulator screen landscape: rotate the canvas 90deg when the
+    // viewport is portrait.
+    function update_screen_rotation()
+    {
+        const container = $("screen_container");
+        container.classList.toggle("portrait-rotated", window.innerHeight > window.innerWidth);
+    }
+    update_screen_rotation();
+    window.addEventListener("resize", update_screen_rotation, true);
+    window.addEventListener("orientationchange", update_screen_rotation, true);
+
     // Show panel toggle buttons (panels start hidden)
     var toggleToolbar = document.getElementById("toggle_toolbar");
     var toggleInfo = document.getElementById("toggle_infopanel");

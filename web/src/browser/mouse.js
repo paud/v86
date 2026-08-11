@@ -21,6 +21,36 @@ export function MouseAdapter(bus, screen_container)
 
         mouse = this;
 
+    // Returns true when the emulator canvas is rotated 90deg for portrait
+    // viewports (see main.js / v86.css .portrait-rotated).
+    function is_rotated()
+    {
+        return screen_container && screen_container.classList.contains("portrait-rotated");
+    }
+
+    // Transform a point (x,y) given relative to the container's top-left into
+    // the canvas's local coordinate space, accounting for 90deg rotation.
+    // Returns [local_x, local_y, local_width, local_height].
+    function rotate_point(x, y, rect)
+    {
+        if(!is_rotated())
+        {
+            return [x, y, rect.width, rect.height];
+        }
+        return [y, rect.width - x, rect.height, rect.width];
+    }
+
+    // Transform a mouse delta. dx/dy are expected after the caller's PS2
+    // y-negation (screen y down -> guest y up).
+    function rotate_delta(dx, dy)
+    {
+        if(!is_rotated())
+        {
+            return [dx, dy];
+        }
+        return [-dy, dx];
+    }
+
     // set by controller
     this.enabled = false;
 
@@ -247,13 +277,13 @@ export function MouseAdapter(bus, screen_container)
                 delta_y = -delta_y;
 
                 console.log("[v86 touch] move delta", delta_x, delta_y, "enabled=" + mouse.enabled);
-                mouse.bus.send("mouse-delta", [delta_x, delta_y]);
+                mouse.bus.send("mouse-delta", rotate_delta(delta_x, delta_y));
 
                 if(screen_container && !document.pointerLockElement)
                 {
                     const rect = screen_container.getBoundingClientRect();
-                    mouse.bus.send("mouse-absolute", [
-                        touch.clientX - rect.left, touch.clientY - rect.top, rect.width, rect.height]);
+                    mouse.bus.send("mouse-absolute",
+                        rotate_point(touch.clientX - rect.left, touch.clientY - rect.top, rect));
                 }
             }
             return;
@@ -310,7 +340,7 @@ export function MouseAdapter(bus, screen_container)
         // NOTE: affected by https://issues.chromium.org/issues/40737979
         //       Causes cursor jumps on multi-monitor and/or 120+ HZ monitors
 
-        mouse.bus.send("mouse-delta", [delta_x, delta_y]);
+        mouse.bus.send("mouse-delta", rotate_delta(delta_x, delta_y));
 
         // Under pointer lock the page coordinates don't change, so no
         // meaningful absolute position can be reported
@@ -327,8 +357,8 @@ export function MouseAdapter(bus, screen_container)
             }
             if(clientX !== undefined && clientY !== undefined)
             {
-                mouse.bus.send("mouse-absolute", [
-                    clientX - rect.left, clientY - rect.top, rect.width, rect.height]);
+                mouse.bus.send("mouse-absolute",
+                    rotate_point(clientX - rect.left, clientY - rect.top, rect));
             }
         }
     }
