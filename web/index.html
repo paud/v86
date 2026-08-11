@@ -1,0 +1,330 @@
+<!doctype html>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+
+<title>v86</title>
+<meta name="viewport" content="width=device-width,minimum-scale=1.0,maximum-scale=1.0,user-scalable=no,interactive-widget=resizes-content">
+<meta name="description" content="Run KolibriOS, Linux or Windows 98 in your browser">
+
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="192.png">
+
+<script>var DEBUG = false;</script>
+<script type="module" src="src/browser/main.js"></script>
+<link rel="stylesheet" href="v86.css">
+
+<div>
+    <div id="boot_options">
+        
+
+
+        <hr>
+        <h4 id="setup">Setup</h4>
+        <table>
+            <tr>
+                <td width="350"><label for="cdrom_image">CD image</label></td>
+                <td>
+                    <input type="file" id="cdrom_image">
+                </td>
+            </tr>
+
+            <tr>
+                <td><label for="floppy_image">Floppy disk image</label></td>
+                <td><input type="file" id="fda_image"> or <a id="fda_toggle_empty_disk">create empty floppy disk</a><br></td>
+            </tr>
+
+            <tr>
+                <td><label for="floppy_image">Second floppy disk image</label></td>
+                <td><input type="file" id="fdb_image"> or <a id="fdb_toggle_empty_disk">create empty floppy disk</a><br></td>
+            </tr>
+
+            <tr>
+                <td><label for="hda_image">Hard disk image</label></td>
+                <td><input type="file" id="hda_image"> or <a id="hda_toggle_empty_disk">create empty hard disk</a><br></td>
+            </tr>
+
+            <tr>
+                <td><label for="hdb_image">Second hard disk image</label></td>
+                <td><input type="file" id="hdb_image"> or <a id="hdb_toggle_empty_disk">create empty hard disk</a><br></td>
+            </tr>
+
+            <!--
+            <tr>
+                <td><label for="multiboot_image">Multiboot kernel image (experimental)</td>
+                <td><input type="file" id="multiboot_image"><br></td>
+            </tr>
+            -->
+
+            <tr>
+                <td><label for="bzimage">Kernel image (bzimage)</label></td>
+                <td><input type="file" id="bzimage"><br></td>
+            </tr>
+            <tr>
+                <td><label for="initrd">initrd</label></td>
+                <td><input type="file" id="initrd"><br></td>
+            </tr>
+
+            <tr>
+                <td><label for="bios">BIOS</label></td>
+                <td><input type="file" id="bios"><br></td>
+            </tr>
+
+            <tr>
+                <td><label for="vga_bios">VGA BIOS</label></td>
+                <td><input type="file" id="vga_bios"><br></td>
+            </tr>
+
+            <tr>
+                <td colspan="2"><small>Disk images are not uploaded to the server</small><hr></td>
+            </tr>
+
+            <tr>
+                <td><label for="memory_size">Memory size</label></td>
+                <td>
+                    <input id="memory_size" type="number" value="128" min="16" max="2048" step="16"> MB<br>
+                </td>
+            </tr>
+
+            <tr>
+                <td><label for="vga_memory_size">Video Memory size</label></td>
+                <td>
+                    <input id="vga_memory_size" type="number" value="8" min="1" max="128" step="1"> MB<br>
+                </td>
+            </tr>
+
+            <tr>
+                <td colspan="2"><hr></td>
+            </tr>
+
+            <tr>
+                <td><label for="relay_url">Networking proxy</label><br>
+                    Presets: <a id="network_none">none</a>, <a id="network_inbrowser">inbrowser</a>, <a id="network_relay">public relay</a>, <a id="network_wisp">wisp</a>, <a id="network_fetch">fetch</a></td>
+                <td>
+                    <input id="relay_url" type="text" value="wss://relay.widgetry.org/">
+                </td>
+            </tr>
+
+            <tr>
+                <td><label for="net_device_type">Network Device Type</label></td>
+                <td>
+                    <select id="net_device_type">
+                        <option value="ne2k">ne2k</option>
+                        <option value="virtio">virtio</option>
+                        <option value="none">none</option>
+                    </select>
+                 </td>
+            </tr>
+
+            <tr id="mtu_ui" style="display: none">
+                <td><label for="mtu">Network MTU</label></td>
+                <td>
+                    <input id="mtu" type="number" value="1500" min="68" max="65535" step="1"> B<br>
+                 </td>
+            </tr>
+
+            <tr>
+                <td colspan="2"><hr></td>
+            </tr>
+
+            <tr>
+                <td><label for="modem">Modem</label></td>
+                <td>
+                    <select id="modem">
+                        <option value="none">None</option>
+                        <option value="1">UART1</option>
+                        <option value="2">UART2</option>
+                        <option value="3">UART3</option>
+                    </select>
+                 </td>
+            </tr>
+
+            <tr>
+                <td colspan="2"><hr></td>
+            </tr>
+
+            <tr>
+                <td><label for="disable_audio">Disable audio</label></td>
+                <td>
+                    <input id="disable_audio" type="checkbox"><br>
+                </td>
+            </tr>
+
+            <tr>
+                <td><label for="acpi">Enable ACPI (experimental)</label></td>
+                <td>
+                    <input id="acpi" type="checkbox"><br>
+                </td>
+            </tr>
+
+            <tr>
+                <td colspan="2"><hr></td>
+            </tr>
+
+            <tr>
+                <td><label for="boot_order">Boot order</label></td>
+                <td>
+                    <select id="boot_order">
+                        <option value="0">Auto</option>
+                        <option value="213">CD / Floppy / Hard Disk</option>
+                        <option value="123">CD / Hard Disk / Floppy</option>
+                        <option value="231">Floppy / CD / Hard Disk</option>
+                        <option value="321">Floppy / Hard Disk / CD</option>
+                        <option value="312">Hard Disk / Floppy / CD</option>
+                        <option value="132">Hard Disk / CD / Floppy</option>
+                    </select>
+                 </td>
+            </tr>
+        </table>
+
+        <br>
+        <button id="start_emulation">Start Emulation</button>
+    </div>
+
+    <div id="runtime_options" style="display: none">
+        <button id="run">Pause</button>
+        <button id="reset">Reset</button>
+        <button id="exit">Exit</button>
+        <button id="ctrlaltdel">Send Ctrl-Alt-Del</button>
+        <button id="alttab">Send Alt-Tab</button>
+        <button id="get_fda_image">Get floppy image</button>
+        <button id="get_fdb_image">Get second floppy image</button>
+        <button id="get_hda_image">Get hard disk image</button>
+        <button id="get_hdb_image">Get second hard disk image</button>
+        <button id="get_cdrom_image">Get CD-ROM image</button>
+        <button id="change_fda_image">Insert floppy image</button>
+        <button id="change_fdb_image">Insert second floppy image</button>
+        <button id="change_cdrom_image" title="Either a single .iso file or multiple files of any type">Insert CD image</button>
+        <button id="save_state">Save State</button>
+        <button id="load_state">Load State</button>
+        <button id="memory_dump">Memory Dump</button>
+        <button id="capture_network_traffic" title="In wireshark: file -> import from hex -> tick direction indication, timestamp %s.%f">Capture network traffic</button>
+        <button id="toggle_mouse">Disable mouse</button>
+        <button id="lock_mouse">Lock mouse</button>
+        <button id="fullscreen">Go fullscreen</button>
+        <button id="take_screenshot">Take screenshot</button>
+        <button id="mute">Mute</button>
+        <button id="toggle_theatre">Enable theatre mode</button>
+        <button style="display: none" id="toggle_zoom_to_fit">Enable zoom to fit</button>
+
+        <label>
+            Scale:
+            <input type="number" min="0.25" step="0.25" value="1.0" id="scale" style="width: 50px">
+        </label>
+    </div>
+    <pre style="display: none" id="loading"></pre>
+</div>
+
+<div id="screen_container" style="display: none">
+    <div id="screen"></div>
+    <canvas id="vga"></canvas>
+    <div style="position: absolute; top: 0; z-index: 10">
+        <textarea class="phone_keyboard"></textarea>
+    </div>
+</div>
+
+
+<div id="runtime_infos" style="display: none">
+    Running: <span id="running_time">0s</span> <br>
+    Speed: <span id="speed">0</span> mIPS<br>
+    Avg speed: <span id="avg_speed">0</span> mIPS<br>
+    <br>
+    <div id="info_storage" style="display: none">
+        <b>IDE device<span id="ide_type"></span></b><br>
+        Sectors read: <span id="info_storage_sectors_read">0</span><br>
+        Bytes read: <span id="info_storage_bytes_read">0</span><br>
+        Sectors written: <span id="info_storage_sectors_written">0</span><br>
+        Bytes written: <span id="info_storage_bytes_written">0</span><br>
+        Status: <span id="info_storage_status"></span><br>
+        <br>
+    </div>
+    <div id="info_filesystem" style="display: none">
+        <b>9p Filesystem</b><br>
+        Bytes read: <span id="info_filesystem_bytes_read">0</span><br>
+        Bytes written: <span id="info_filesystem_bytes_written">0</span><br>
+        <div style="white-space: nowrap; overflow-x: hidden">Last file: <span id="info_filesystem_last_file"></span></div>
+        Status: <span id="info_filesystem_status"></span><br>
+        <br>
+    </div>
+    <div id="info_network" style="display: none">
+        <b>Network</b><br>
+        Bytes received: <span id="info_network_bytes_received">0</span><br>
+        Bytes transmitted: <span id="info_network_bytes_transmitted">0</span><br>
+        <br>
+    </div>
+    <b>VGA</b><br>
+    Mode: <span id="info_vga_mode"></span><br>
+    Resolution: <span id="info_res">-</span><br>
+    <br>
+    Mouse: <span id="info_mouse_enabled">No</span><br>
+
+    <div id="description" style="display: none"><br></div>
+</div>
+
+<div id="filesystem_panel" style="display: none">
+    <label>
+        Send files to emulator<br>
+        <input type="file" id="filesystem_send_file" multiple>
+    </label>
+    <br><br>
+    <label>
+        Get file from emulator<br>
+        <input type="text" id="filesystem_get_file" placeholder="Absolute path">
+    </label>
+</div>
+
+<br style="clear: both"><br>
+
+<div id="terminal"></div>
+
+<button id="toggle_ui" style="display: none">Hide UI</button>
+<div id="theatre_background" style="display: none"></div>
+
+<!-- Toggle arrows for panels -->
+<div id="toggle_toolbar" class="panel-toggle" title="Toggle toolbar" style="display: none">
+    <svg width="20" height="20" viewBox="0 0 20 20"><path d="M5 8l5 5 5-5" stroke="white" stroke-width="2" fill="none"/></svg>
+</div>
+<div id="toggle_infopanel" class="panel-toggle" title="Toggle info" style="display: none">
+    <svg width="20" height="20" viewBox="0 0 20 20"><path d="M5 12l5-5 5 5" stroke="white" stroke-width="2" fill="none"/></svg>
+</div>
+
+<script>
+(function() {
+    function initToggles() {
+        var toolbar = document.getElementById("runtime_options");
+        var infopanel = document.getElementById("runtime_infos");
+        var btnToolbar = document.getElementById("toggle_toolbar");
+        var btnInfo = document.getElementById("toggle_infopanel");
+
+        if (!toolbar || !infopanel || !btnToolbar || !btnInfo) return;
+
+        btnToolbar.addEventListener("click", function(e) {
+            e.stopPropagation();
+            var hidden = toolbar.style.display === "none";
+            toolbar.style.display = hidden ? "block" : "none";
+            btnToolbar.classList.toggle("panel-hidden", !hidden);
+        });
+        btnInfo.addEventListener("click", function(e) {
+            e.stopPropagation();
+            var hidden = infopanel.style.display === "none";
+            infopanel.style.display = hidden ? "block" : "none";
+            btnInfo.classList.toggle("panel-hidden", !hidden);
+        });
+    }
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", initToggles);
+    } else {
+        initToggles();
+    }
+})();
+</script>
+
+<br style="clear: both">
+<code>Version: <a id="version" href="https://github.com/copy/v86/commits/98e7110c2">98e7110c2</a> (Feb 16, 2021 12:02)</code>
+
+<hr>
+<a href="debug.html">Enable debug</a>
+&mdash;
+<a href="https://github.com/copy/v86/blob/master/Readme.md">Readme</a>
+&mdash;
+<a href="https://github.com/copy/v86">Project on Github</a>
+&mdash;
+<a href="https://github.com/copy/v86#compatibility">Compatibility</a>

@@ -9,6 +9,9 @@ set -e
 
 cd "$(dirname "$0")"
 
+# Ensure cargo is in PATH
+export PATH="$HOME/.cargo/bin:$PATH"
+
 MODE="${1:-debug}"
 
 build_c_objects() {
@@ -71,37 +74,25 @@ build_wasm_release() {
 }
 
 build_js() {
-    echo "==> Building v86_all.js (closure compiler)..."
+    echo "==> Building v86_all.js (esbuild)..."
 
-    CLOSURE_DIR=closure-compiler
-    CLOSURE_JAR="$CLOSURE_DIR/compiler.jar"
-
-    if [ ! -f "$CLOSURE_JAR" ]; then
-        echo "    Closure compiler not found. Downloading..."
-        mkdir -p "$CLOSURE_DIR"
-        curl -L -o "$CLOSURE_JAR" \
-            "https://repo1.maven.org/maven2/com/google/javascript/closure-compiler/v20240317/closure-compiler-v20240317.jar"
-    fi
-
-    CORE_FILES="src/cjs.js src/const.js src/io.js src/main.js src/lib.js src/buffer.js src/ide.js src/pci.js src/floppy.js src/dma.js src/pit.js src/vga.js src/ps2.js src/rtc.js src/uart.js src/parallel.js src/vmware.js src/acpi.js src/iso9660.js src/state.js src/ne2k.js src/sb16.js src/virtio.js src/virtio_console.js src/virtio_net.js src/virtio_balloon.js src/bus.js src/log.js src/cpu.js src/elf.js src/kernel.js"
-    LIB_FILES="lib/9p.js lib/filesystem.js lib/marshall.js"
-    BROWSER_FILES="src/browser/screen.js src/browser/keyboard.js src/browser/mouse.js src/browser/speaker.js src/browser/serial.js src/browser/network.js src/browser/starter.js src/browser/worker_bus.js src/browser/dummy_screen.js src/browser/ansi_screen.js src/browser/inbrowser_network.js src/browser/fake_network.js src/browser/wisp_network.js src/browser/fetch_network.js src/browser/print_stats.js src/browser/filestorage.js src/browser/modem.js"
-
-    java -jar "$CLOSURE_JAR" \
-        --js_output_file build/v86_all.js \
-        --define=DEBUG=false \
-        --source_map_format V3 \
-        --create_source_map build/v86_all.js.map \
-        --generate_exports \
-        --externs src/externs.js \
-        --warning_level VERBOSE \
-        --compilation_level ADVANCED \
-        --js $CORE_FILES \
-        --js $LIB_FILES \
-        --js $BROWSER_FILES \
-        --js src/browser/main.js \
-        --language_in ECMASCRIPT_2020 \
-        --language_out ECMASCRIPT_2020
+    npx -y esbuild src/browser/main.js \
+        --bundle \
+        --format=iife \
+        --global-name=V86 \
+        --outfile=build/v86_all.js \
+        --define:DEBUG=false \
+        --platform=browser \
+        --external:perf_hooks \
+        --external:crypto \
+        --external:node:crypto \
+        --external:./capstone-x86.min.js \
+        --external:./libwabt.cjs \
+        --external:node:fs/promises \
+        --external:fs \
+        --external:path \
+        --external:url \
+        --minify
 
     echo "    done: $(ls -lh build/v86_all.js | awk '{print $5}')"
 }
