@@ -301,6 +301,13 @@ export function KeyboardAdapter(bus)
 
     function may_handle(e)
     {
+        // Let Cmd+V (macOS) / Ctrl+V (other) reach the browser so the paste
+        // event fires for file transfer into the VM.
+        if((e.metaKey || e.ctrlKey) && (e.key === "v" || e.key === "V" || e.keyCode === 86))
+        {
+            return false;
+        }
+
         if(e.shiftKey && e.ctrlKey && (e.keyCode === 73 || e.keyCode === 74 || e.keyCode === 75))
         {
               // don't prevent opening chromium dev tools

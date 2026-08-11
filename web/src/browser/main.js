@@ -3078,6 +3078,87 @@ function init_ui(profile, settings, emulator)
             $("get_cdrom_image").style.display = "block";
         }
     }
+
+    // Global paste handler: Ctrl/Cmd+V files -> auto-generate ISO -> insert as CD-ROM
+    window.addEventListener("paste", async function(e)
+    {
+        // Only act when the emulator is running (runtime options visible)
+        if($("runtime_options").style.display === "none") return;
+
+        const items = e.clipboardData?.items;
+        if(!items) return;
+
+        const files = [];
+        for(const item of items)
+        {
+            if(item.kind === "file")
+            {
+                const f = item.getAsFile();
+                if(f) files.push(f);
+            }
+        }
+        if(!files.length) return;
+
+        e.preventDefault();
+        console.log("[v86] Paste detected, " + files.length + " file(s):", files.map(f => f.name));
+        // Eject existing CD if present, then insert the new one
+        if(emulator.v86.cpu.devices.cdrom?.has_disk())
+        {
+            emulator.eject_cdrom();
+        }
+        await insert_cdrom(files);
+    });
+
+    // "Paste to CD" button: try clipboard API first, fall back to file picker
+    $("paste_to_cd").onclick = async function()
+    {
+        $("paste_to_cd").blur();
+
+        // Try the async Clipboard API first — works for images/screenshots
+        var files = [];
+        try
+        {
+            if(navigator.clipboard && navigator.clipboard.read)
+            {
+                const items = await navigator.clipboard.read();
+                for(const item of items)
+                {
+                    // Prefer file-type content, skip plain text/html
+                    for(const type of item.types)
+                    {
+                        if(type === "text/plain" || type === "text/html") continue;
+                        const blob = await item.getType(type);
+                        const name = blob.name || "clipboard_file_" + files.length;
+                        files.push(new File([blob], name, { type }));
+                        break;
+                    }
+                }
+            }
+        }
+        catch(err)
+        {
+            console.warn("[v86] Clipboard API read failed:", err.message);
+        }
+
+        // If clipboard didn't yield files (common on macOS for Finder-copied
+        // files — browsers don't expose public.file-url), fall back to a
+        // file picker so the user can select the same files directly.
+        if(!files.length)
+        {
+            const picked = await pick_file(true);
+            files = Array.from(picked);
+        }
+
+        if(!files.length) return;
+
+        console.log("[v86] Paste to CD: " + files.length + " file(s):", files.map(f => f.name));
+        if(emulator.v86.cpu.devices.cdrom?.has_disk())
+        {
+            emulator.eject_cdrom();
+        }
+        await insert_cdrom(files);
+    };
+
     $("change_cdrom_image").ondrop = function(e)
     {
         e.preventDefault();
