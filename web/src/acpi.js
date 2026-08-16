@@ -82,6 +82,19 @@ export function ACPI(cpu)
     {
         dbg_log("ACPI status write: " + h(value), LOG_ACPI);
         this.status = value;
+
+        // Detect ACPI S5 soft-off: SLP_EN (bit 13) + SLP_TYP = S5 (bits 12:10 = 111 or 101)
+        // Different BIOSes use different SLP_TYP values for S5; check SLP_EN and
+        // treat any non-zero sleep type as a shutdown request.
+        if(value & 0x2000) // SLP_EN
+        {
+            const slp_typ = (value >> 10) & 0x7;
+            if(slp_typ >= 4) // S4 or S5
+            {
+                dbg_log("ACPI shutdown via SLP_EN + SLP_TYP=" + slp_typ, LOG_ACPI);
+                this.cpu.bus.send("emulator-shutdown");
+            }
+        }
     });
 
     // ACPI, pmtimer

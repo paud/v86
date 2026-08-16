@@ -4,6 +4,8 @@ import { SyncBuffer, SyncFileBuffer } from "../buffer.js";
 import { h, pad0, pads, hex_dump, dump_file, download, round_up_to_next_power_of_2 } from "../lib.js";
 import { log_data, LOG_LEVEL, set_log_level } from "../log.js";
 import * as iso9660 from "../iso9660.js";
+import * as persist from "./persist.js";
+import { trace } from "./trace.js";
 
 
 const ON_LOCALHOST = !location.hostname.endsWith("copy.sh");
@@ -13,7 +15,7 @@ const DEFAULT_MEMORY_SIZE = 128;
 const DEFAULT_VGA_MEMORY_SIZE = 8;
 const DEFAULT_BOOT_ORDER = 0;
 const DEFAULT_MTU = 1500;
-const DEFAULT_NIC_TYPE = "ne2k";
+const DEFAULT_NIC_TYPE = "none";//默认不联网，之前是"ne2k"，会连ws
 
 const MAX_ARRAY_BUFFER_SIZE_MB = 2000;
 
@@ -2069,25 +2071,43 @@ if(document.readyState === "complete")
 // - the user clicked on a profile
 // - the ?profile= query parameter specified a valid profile
 // - the ?profile= query parameter was set to "custom" and at least one disk image was given
-function start_emulation(profile, query_args)
+async function start_emulation(profile, query_args)
 {
     $("boot_options").style.display = "none";
 
     const new_query_args = new Map();
     new_query_args.set("profile", profile?.id || "custom");
 
+    // IndexedDB persistence key
+    const persistKey = "v86-state-" + (profile?.id || "custom");
+    const persistEnabled = $("persist_state")?.checked !== false;
+
+    // Check for locally persisted state
+    let savedState = null;
+    if(persistEnabled)
+    {
+        savedState = await persist.loadState(persistKey);
+        if(savedState)
+        {
+            console.log("[v86-persist] Found saved state (" + (savedState.byteLength / 1024 / 1024).toFixed(1) + " MB), will restore from IndexedDB");
+        }
+    }
+
     const settings = {};
 
     if(profile)
     {
-        if(profile.state)
-        {
-            $("reset").style.display = "none";
-        }
-
         set_title(profile.name);
 
-        settings.initial_state = profile.state;
+        // Use locally persisted state if available, otherwise use server state
+        if(savedState)
+        {
+            settings.initial_state = { buffer: savedState };
+        }
+        else
+        {
+            settings.initial_state = profile.state;
+        }
         settings.filesystem = profile.filesystem;
         settings.fda = profile.fda;
         settings.fdb = profile.fdb;
@@ -2443,6 +2463,13 @@ function start_emulation(profile, query_args)
             debug_start(emulator);
         }
 
+        // Start auto-saving state to IndexedDB every 30 seconds
+        if(persistEnabled)
+        {
+            persist.startAutoSave(persistKey, () => emulator.save_state());
+            console.log("[v86-persist] Auto-save enabled for key: " + persistKey);
+        }
+
         if(emulator.v86.cpu.wm.exports["profiler_is_enabled"]())
         {
             const CLEAR_STATS = false;
@@ -2471,7 +2498,7 @@ function start_emulation(profile, query_args)
             }, 3000);
         }
 
-        init_ui(profile, settings, emulator);
+        init_ui(profile, settings, emulator, persistKey, persistEnabled);
 
         if(query_args?.has("c"))
         {
@@ -2520,7 +2547,7 @@ function start_emulation(profile, query_args)
  * @param {Object} settings
  * @param {V86} emulator
  */
-function init_ui(profile, settings, emulator)
+function init_ui(profile, settings, emulator, persistKey, persistEnabled)
 {
     $("loading").style.display = "none";
     $("runtime_options").style.display = "none";
@@ -2568,17 +2595,36 @@ function init_ui(profile, settings, emulator)
         });
     }
 
+    var powered_off = false;
+
     $("run").onclick = function()
     {
+        trace("Main", "Run button clicked, is_running=" + emulator.is_running() + " powered_off=" + powered_off);
         if(emulator.is_running())
         {
-            $("run").textContent = "Run";
+            $("run").textContent = "Start";
+            trace("Main", "Run button: pausing emulator");
             emulator.stop();
         }
         else
         {
             $("run").textContent = "Pause";
-            emulator.run();
+            $("loading").style.display = "none";
+            if(powered_off)
+            {
+                trace("Main", "Run button: powering on (cold boot)");
+                powered_off = false;
+                emulator.power_on();
+                if(persistEnabled)
+                {
+                    persist.startAutoSave(persistKey, () => emulator.save_state());
+                }
+            }
+            else
+            {
+                trace("Main", "Run button: resuming emulator");
+                emulator.run();
+            }
         }
 
         $("run").blur();
@@ -2586,10 +2632,40 @@ function init_ui(profile, settings, emulator)
 
     $("exit").onclick = function()
     {
+        trace("Main", "Exit button clicked");
         emulator.destroy();
         const url = new URL(location.href);
         url.searchParams.delete("profile");
         location.href = url.pathname + url.search;
+    };
+
+    emulator.add_listener("emulator-shutdown", function()
+    {
+        trace("Main", "emulator-shutdown event (guest OS power off)");
+        $("run").textContent = "Start";
+        $("run").disabled = false;
+        powered_off = true;
+        const loading = $("loading");
+        loading.style.display = "block";
+        loading.textContent = "The guest operating system has shut down.\nClick Start to power on, or Exit to return to setup.";
+    });
+
+    $("power_off").onclick = async function()
+    {
+        trace("Main", "Power Off clicked, cpu_is_running=" + emulator.cpu_is_running);
+        persist.stopAutoSave();
+        await emulator.power_off();
+        powered_off = true;
+        trace("Main", "Power Off: complete");
+        if(emulator.screen_adapter && emulator.screen_adapter.clear_screen)
+        {
+            emulator.screen_adapter.clear_screen();
+        }
+        $("run").textContent = "Start";
+        const loading = $("loading");
+        loading.style.display = "block";
+        loading.textContent = "Emulator powered off.\nClick Start to power on, or Exit to return to setup.";
+        $("power_off").blur();
     };
 
     $("lock_mouse").onclick = function()
@@ -2898,7 +2974,21 @@ function init_ui(profile, settings, emulator)
 
     $("reset").onclick = function()
     {
-        emulator.restart();
+        trace("Main", "Reset clicked, cpu_is_running=" + emulator.cpu_is_running);
+        $("loading").style.display = "none";
+        powered_off = false;
+        // Full power-on reset: reset all devices and boot from BIOS
+        emulator.v86.cpu.power_on_reset();
+        emulator.v86.stopping = false;
+        if(!emulator.cpu_is_running)
+        {
+            emulator.v86.run();
+        }
+        $("run").textContent = "Pause";
+        if(persistEnabled)
+        {
+            persist.startAutoSave(persistKey, () => emulator.save_state());
+        }
         $("reset").blur();
     };
 
@@ -3296,6 +3386,17 @@ function init_ui(profile, settings, emulator)
             }
         };
         filereader.readAsArrayBuffer(file);
+    };
+
+    $("clear_persist").onclick = async function()
+    {
+        if(confirm("Delete the auto-saved state from this browser?\n\nThis cannot be undone. The next page load will start from the server snapshot."))
+        {
+            await persist.deleteState(persistKey);
+            persist.stopAutoSave();
+            alert("Saved state deleted. Refresh the page to start from the server snapshot.");
+        }
+        $("clear_persist").blur();
     };
 
     $("ctrlaltdel").onclick = function()

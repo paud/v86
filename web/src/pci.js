@@ -267,6 +267,16 @@ PCI.prototype.set_state = function(state)
     this.pci_status.set(state[259]);
 };
 
+PCI.prototype.reset = function()
+{
+    this.pci_addr.fill(0);
+    this.pci_value.fill(0);
+    this.pci_response.fill(0);
+    this.pci_status.fill(0);
+    // Note: PCI devices themselves are not reset here; each device
+    // should be reset individually by the caller.
+};
+
 PCI.prototype.pci_query = function()
 {
     var dbg_line = "query";

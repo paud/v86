@@ -6,6 +6,7 @@ import * as print_stats from "./print_stats.js";
 import { Bus } from "../bus.js";
 import { BOOT_ORDER_FD_FIRST, BOOT_ORDER_HD_FIRST, BOOT_ORDER_CD_FIRST } from "../rtc.js";
 import { EEXIST, ENOENT } from "../../lib/9p.js";
+import { trace, trace_async } from "./trace.js";
 
 import { SpeakerAdapter } from "./speaker.js";
 import { NetworkAdapter } from "./network.js";
@@ -191,16 +192,35 @@ export function V86(options)
 
 V86.prototype.continue_init = async function(emulator, options)
 {
+    trace("Starter", "continue_init: setting up bus events");
+
     this.bus.register("emulator-stopped", function()
     {
+        trace("Starter", "event: emulator-stopped");
         this.cpu_is_running = false;
         this.screen_adapter.pause();
     }, this);
 
     this.bus.register("emulator-started", function()
     {
+        trace("Starter", "event: emulator-started");
         this.cpu_is_running = true;
         this.screen_adapter.continue();
+    }, this);
+
+    this.bus.register("emulator-shutdown", function()
+    {
+        trace("Starter", "event: emulator-shutdown, calling stop()");
+        this.stop();
+    }, this);
+
+    this.bus.register("emulator-reboot", function()
+    {
+        trace("Starter", "event: emulator-reboot, ensuring CPU is running");
+        if(!this.cpu_is_running)
+        {
+            this.v86.run();
+        }
     }, this);
 
     var settings = {};
@@ -591,16 +611,13 @@ V86.prototype.continue_init = async function(emulator, options)
 
     async function done()
     {
-        //if(settings.initial_state)
-        //{
-        //    // avoid large allocation now, memory will be restored later anyway
-        //    settings.memory_size = 0;
-        //}
+        trace("Starter", "done: all files loaded, initializing");
 
         if(settings.fs9p && settings.fs9p_json)
         {
             if(!settings.initial_state)
             {
+                trace("Starter", "done: loading filesystem from JSON");
                 settings.fs9p.load_from_json(settings.fs9p_json);
 
                 if(options.bzimage_initrd_from_filesystem)
@@ -632,26 +649,35 @@ V86.prototype.continue_init = async function(emulator, options)
         this.serial_adapter && this.serial_adapter.show && this.serial_adapter.show();
         this.virtio_console_adapter && this.virtio_console_adapter.show && this.virtio_console_adapter.show();
 
+        trace("Starter", "done: calling v86.init()");
         this.v86.init(settings);
 
         this.modem && this.modem.initialize();
 
         if(settings.initial_state)
         {
+            trace("Starter", "done: restoring state (" + (settings.initial_state.byteLength / 1024 / 1024).toFixed(1) + " MB)");
             emulator.restore_state(settings.initial_state);
+            trace("Starter", "done: state restored");
 
             // The GC can't free settings, since it is referenced from
             // several closures. This isn't needed anymore, so we delete it
             // here
             settings.initial_state = undefined;
         }
+        else
+        {
+            trace("Starter", "done: no initial state, cold boot");
+        }
 
         if(options.autostart)
         {
+            trace("Starter", "done: autostart=true, calling v86.run()");
             this.v86.run();
         }
 
         this.emulator_bus.send("emulator-loaded");
+        trace("Starter", "done: complete, emulator-loaded sent");
     }
 };
 
@@ -796,6 +822,7 @@ V86.prototype.get_bzimage_initrd_from_filesystem = function(filesystem)
  */
 V86.prototype.run = async function()
 {
+    trace("Starter", "run() called, cpu_is_running=" + this.cpu_is_running);
     this.v86.run();
 };
 
@@ -804,17 +831,21 @@ V86.prototype.run = async function()
  */
 V86.prototype.stop = async function()
 {
+    trace("Starter", "stop() called, cpu_is_running=" + this.cpu_is_running);
     if(!this.cpu_is_running)
     {
+        trace("Starter", "stop: not running, returning immediately");
         return;
     }
 
     await new Promise(resolve => {
         const listener = () => {
+            trace("Starter", "stop: emulator-stopped event received");
             this.remove_listener("emulator-stopped", listener);
             resolve();
         };
         this.add_listener("emulator-stopped", listener);
+        trace("Starter", "stop: calling v86.stop()");
         this.v86.stop();
     });
 };
@@ -842,7 +873,38 @@ V86.prototype.destroy = async function()
  */
 V86.prototype.restart = function()
 {
+    trace("Starter", "restart() called");
     this.v86.restart();
+    trace("Starter", "restart() done");
+};
+
+/**
+ * Power off: stop the CPU and reset all devices to power-on state.
+ * After calling this, the emulator is stopped and devices are in
+ * their initial state. Call power_on() to boot from BIOS again.
+ */
+V86.prototype.power_off = async function()
+{
+    trace("Starter", "power_off() called");
+    await this.stop();
+    this.v86.cpu.power_on_reset();
+    trace("Starter", "power_off() done");
+};
+
+/**
+ * Power on: boot from BIOS after a power_off().
+ * If the emulator is already running, does nothing.
+ */
+V86.prototype.power_on = function()
+{
+    trace("Starter", "power_on() called, cpu_is_running=" + this.cpu_is_running);
+    if(this.cpu_is_running)
+    {
+        trace("Starter", "power_on: already running");
+        return;
+    }
+    this.v86.run();
+    trace("Starter", "power_on() done");
 };
 
 /**

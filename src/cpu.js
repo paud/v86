@@ -952,6 +952,76 @@ CPU.prototype.reboot_internal = function()
         this.devices.ps2.reset();
     }
 
+    // Reset VGA: disable SVGA/Bochs VBE mode so the BIOS can reinitialize
+    // the display to text mode. Without this, the VGA stays in the graphical
+    // mode set by the guest OS and the BIOS POST output (and subsequent boot)
+    // appears as a black screen.
+    if(this.devices.vga)
+    {
+        const vga = this.devices.vga;
+        vga.svga_enabled = false;
+        vga.svga_bank_offset = 0;
+        vga.svga_offset = 0;
+        vga.svga_offset_x = 0;
+        vga.svga_offset_y = 0;
+        vga.dispi_enable_value = 0;
+        vga.graphical_mode = false;
+        vga.crtc.fill(0);
+        vga.crtc_mode = 0;
+        vga.start_address = 0;
+        vga.start_address_latched = 0;
+        vga.offset_register = 0;
+        vga.plane_write_bm = 0xF;
+        vga.miscellaneous_output_register = 0xFF;
+        vga.sequencer_memory_mode = 0;
+        vga.clocking_mode = 0;
+        vga.attribute_controller_index = -1;
+        vga.palette_source = 0x20;
+        vga.attribute_mode = 0;
+        vga.color_plane_enable = 0;
+        vga.graphics_index = -1;
+        vga.plane_read = 0;
+        vga.planar_mode = 0;
+        vga.planar_rotate_reg = 0;
+        vga.planar_bitmap = 0xFF;
+        vga.planar_setreset = 0;
+        vga.planar_setreset_enable = 0;
+        vga.miscellaneous_graphics_register = 0;
+        vga.dac_mask = 0xFF;
+        vga.dac_state = 0;
+        vga.dac_map.fill(0);
+        vga.vga_memory.fill(0);
+        vga.svga_memory.fill(0);
+        vga.set_size_text(vga.max_cols, vga.max_rows);
+        vga.complete_redraw();
+    }
+
+    // Reset IDE controller registers (disk buffers/data are preserved)
+    if(this.devices.ide)
+    {
+        const ide = this.devices.ide;
+        if(ide.primary)
+        {
+            ide.primary.master.device_reset();
+            ide.primary.slave.device_reset();
+            ide.primary.device_control_reg = 0;
+            ide.primary.current_interface = ide.primary.master;
+        }
+        if(ide.secondary)
+        {
+            ide.secondary.master.device_reset();
+            ide.secondary.slave.device_reset();
+            ide.secondary.device_control_reg = 0;
+            ide.secondary.current_interface = ide.secondary.master;
+        }
+    }
+
+    // Reset floppy controller
+    if(this.devices.fdc)
+    {
+        this.devices.fdc.reset_fdc();
+    }
+
     this.load_bios();
 };
 
@@ -1253,6 +1323,17 @@ CPU.prototype.init = function(settings, device_bus)
             this.devices.sb16 = new SB16(this, device_bus);
         }
     }
+
+    // APM/ACPI shutdown ports
+    // SeaBIOS (CONFIG_QEMU) uses port 0x604 for power-off
+    // Bochs and some APM implementations use port 0x8900
+    const shutdown_handler = function(value)
+    {
+        dbg_log("Guest OS shutdown via I/O port, value=" + h(value), LOG_CPU);
+        this.bus.send("emulator-shutdown");
+    };
+    this.io.register_write(0x604, this, shutdown_handler, shutdown_handler, shutdown_handler);
+    this.io.register_write(0x8900, this, shutdown_handler, shutdown_handler, shutdown_handler);
 
     if(settings.multiboot)
     {

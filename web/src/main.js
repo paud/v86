@@ -1,5 +1,6 @@
 import { CPU } from "./cpu.js";
 import { save_state, restore_state } from "./state.js";
+import { trace } from "./browser/trace.js";
 export { V86 } from "./browser/starter.js";
 
 /**
@@ -30,6 +31,7 @@ export function v86(bus, wasm)
 
 v86.prototype.run = function()
 {
+    trace("Main", "run() called, running=" + this.running + " stopping=" + this.stopping);
     this.stopping = false;
 
     if(!this.running)
@@ -39,12 +41,14 @@ v86.prototype.run = function()
     }
 
     this.next_tick(0);
+    trace("Main", "run() done, tick scheduled");
 };
 
 v86.prototype.do_tick = function()
 {
     if(this.stopping || !this.running)
     {
+        trace("Main", "do_tick: stopping, running=" + this.running + " stopping=" + this.stopping);
         this.stopping = this.running = false;
         this.bus.send("emulator-stopped");
         return;
@@ -52,6 +56,18 @@ v86.prototype.do_tick = function()
 
     this.idle = false;
     const t = this.cpu.main_loop();
+
+    // Check if guest OS requested shutdown via I/O port
+    if(this.cpu.shutdown_requested)
+    {
+        trace("Main", "do_tick: shutdown_requested");
+        this.cpu.shutdown_requested = false;
+        this.stopping = true;
+        this.running = false;
+        this.bus.send("emulator-shutdown");
+        this.bus.send("emulator-stopped");
+        return;
+    }
 
     this.next_tick(t);
 };
@@ -73,6 +89,7 @@ v86.prototype.yield_callback = function(tick)
 
 v86.prototype.stop = function()
 {
+    trace("Main", "stop() called, running=" + this.running);
     if(this.running)
     {
         this.stopping = true;
@@ -86,7 +103,16 @@ v86.prototype.destroy = function()
 
 v86.prototype.restart = function()
 {
+    trace("Main", "restart() called");
+    this.cpu.shutdown_requested = false;
+    this.stopping = false;
     this.cpu.reboot_internal();
+    if(!this.running)
+    {
+        trace("Main", "restart: not running, calling run()");
+        this.run();
+    }
+    trace("Main", "restart() done");
 };
 
 v86.prototype.init = function(settings)

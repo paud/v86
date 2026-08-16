@@ -104,6 +104,19 @@ PIT.prototype.set_state = function(state)
     this.counter_start_value = state[8];
 };
 
+PIT.prototype.reset = function()
+{
+    this.counter_next_low.fill(0);
+    this.counter_enabled.fill(0);
+    this.counter_mode.fill(0);
+    this.counter_read_mode.fill(0);
+    this.counter_latch.fill(0);
+    this.counter_latch_value.fill(0);
+    this.counter_reload.fill(0);
+    this.counter_start_time.fill(0);
+    this.counter_start_value.fill(0);
+};
+
 PIT.prototype.timer = function(now, no_irq)
 {
     var time_to_next_interrupt = 100;

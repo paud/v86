@@ -52,6 +52,7 @@ import {
 // For Types Only
 
 import { BusConnector } from "./bus.js";
+import { trace } from "./browser/trace.js";
 
 // Resources:
 // https://pdos.csail.mit.edu/6.828/2006/readings/i386/toc.htm
@@ -931,12 +932,14 @@ CPU.prototype.unpack_memory = function(bitmap, packed_memory)
 
 CPU.prototype.reboot_internal = function()
 {
+    trace("CPU", "reboot_internal: resetting CPU");
     this.reset_cpu();
 
     this.fw_value = [];
 
     if(this.devices.virtio_9p)
     {
+        trace("CPU", "reboot_internal: reset virtio_9p");
         this.devices.virtio_9p.reset();
     }
     if(this.devices.virtio_console)
@@ -949,10 +952,248 @@ CPU.prototype.reboot_internal = function()
     }
     if(this.devices.ps2)
     {
+        trace("CPU", "reboot_internal: reset PS2");
         this.devices.ps2.reset();
     }
 
+    // Reset VGA: disable SVGA/Bochs VBE mode so the BIOS can reinitialize
+    // the display to text mode.
+    if(this.devices.vga)
+    {
+        trace("CPU", "reboot_internal: reset VGA");
+        const vga = this.devices.vga;
+        vga.svga_enabled = false;
+        vga.svga_bank_offset = 0;
+        vga.svga_offset = 0;
+        vga.svga_offset_x = 0;
+        vga.svga_offset_y = 0;
+        vga.dispi_enable_value = 0;
+        vga.graphical_mode = false;
+        vga.crtc.fill(0);
+        vga.crtc_mode = 0;
+        vga.start_address = 0;
+        vga.start_address_latched = 0;
+        vga.offset_register = 0;
+        vga.plane_write_bm = 0xF;
+        vga.miscellaneous_output_register = 0xFF;
+        vga.sequencer_memory_mode = 0;
+        vga.clocking_mode = 0;
+        vga.attribute_controller_index = -1;
+        vga.palette_source = 0x20;
+        vga.attribute_mode = 0;
+        vga.color_plane_enable = 0;
+        vga.graphics_index = -1;
+        vga.plane_read = 0;
+        vga.planar_mode = 0;
+        vga.planar_rotate_reg = 0;
+        vga.planar_bitmap = 0xFF;
+        vga.planar_setreset = 0;
+        vga.planar_setreset_enable = 0;
+        vga.miscellaneous_graphics_register = 0;
+        vga.dac_mask = 0xFF;
+        vga.dac_state = 0;
+        vga.dac_map.fill(0);
+        vga.vga_memory.fill(0);
+        vga.svga_memory.fill(0);
+        vga.set_size_text(vga.max_cols, vga.max_rows);
+        vga.complete_redraw();
+    }
+
+    // Reset IDE controller registers (disk buffers/data are preserved)
+    if(this.devices.ide)
+    {
+        trace("CPU", "reboot_internal: reset IDE");
+        const ide = this.devices.ide;
+        if(ide.primary)
+        {
+            ide.primary.master.device_reset();
+            ide.primary.slave.device_reset();
+            ide.primary.device_control_reg = 0;
+            ide.primary.current_interface = ide.primary.master;
+        }
+        if(ide.secondary)
+        {
+            ide.secondary.master.device_reset();
+            ide.secondary.slave.device_reset();
+            ide.secondary.device_control_reg = 0;
+            ide.secondary.current_interface = ide.secondary.master;
+        }
+    }
+
+    // Reset floppy controller
+    if(this.devices.fdc)
+    {
+        trace("CPU", "reboot_internal: reset FDC");
+        this.devices.fdc.reset_fdc();
+    }
+
+    trace("CPU", "reboot_internal: loading BIOS");
     this.load_bios();
+    trace("CPU", "reboot_internal: done");
+};
+
+/**
+ * Full power-on reset: reset CPU and ALL devices to their initial
+ * power-on state. Disk buffers/data are preserved, but all device
+ * registers and CPU state are reset. After this call, the system is
+ * ready to boot from BIOS as if it was just powered on.
+ */
+CPU.prototype.power_on_reset = function()
+{
+    trace("CPU", "power_on_reset: beginning full reset");
+
+    // 1. Reset CPU core (registers, cache, mode, etc.)
+    this.reset_cpu();
+    this.fw_value = [];
+
+    // 2. Reset all devices
+    if(this.devices.pci)
+    {
+        trace("CPU", "power_on_reset: reset PCI");
+        this.devices.pci.reset();
+    }
+    if(this.devices.pit)
+    {
+        trace("CPU", "power_on_reset: reset PIT");
+        this.devices.pit.reset();
+    }
+    if(this.devices.rtc)
+    {
+        trace("CPU", "power_on_reset: reset RTC");
+        this.devices.rtc.reset();
+    }
+    if(this.devices.dma)
+    {
+        trace("CPU", "power_on_reset: reset DMA");
+        this.devices.dma.reset();
+    }
+    if(this.devices.vga)
+    {
+        trace("CPU", "power_on_reset: reset VGA");
+        const vga = this.devices.vga;
+        vga.svga_enabled = false;
+        vga.svga_bank_offset = 0;
+        vga.svga_offset = 0;
+        vga.svga_offset_x = 0;
+        vga.svga_offset_y = 0;
+        vga.dispi_enable_value = 0;
+        vga.graphical_mode = false;
+        vga.crtc.fill(0);
+        vga.crtc_mode = 0;
+        vga.start_address = 0;
+        vga.start_address_latched = 0;
+        vga.offset_register = 0;
+        vga.plane_write_bm = 0xF;
+        vga.miscellaneous_output_register = 0xFF;
+        vga.sequencer_memory_mode = 0;
+        vga.clocking_mode = 0;
+        vga.attribute_controller_index = -1;
+        vga.palette_source = 0x20;
+        vga.attribute_mode = 0;
+        vga.color_plane_enable = 0;
+        vga.graphics_index = -1;
+        vga.plane_read = 0;
+        vga.planar_mode = 0;
+        vga.planar_rotate_reg = 0;
+        vga.planar_bitmap = 0xFF;
+        vga.planar_setreset = 0;
+        vga.planar_setreset_enable = 0;
+        vga.miscellaneous_graphics_register = 0;
+        vga.dac_mask = 0xFF;
+        vga.dac_state = 0;
+        vga.dac_map.fill(0);
+        vga.vga_memory.fill(0);
+        vga.svga_memory.fill(0);
+        vga.set_size_text(vga.max_cols, vga.max_rows);
+        vga.complete_redraw();
+    }
+    if(this.devices.ps2)
+    {
+        trace("CPU", "power_on_reset: reset PS2");
+        this.devices.ps2.reset();
+    }
+    if(this.devices.ide)
+    {
+        trace("CPU", "power_on_reset: reset IDE");
+        const ide = this.devices.ide;
+        if(ide.primary)
+        {
+            ide.primary.master.device_reset();
+            ide.primary.slave.device_reset();
+            ide.primary.device_control_reg = 0;
+            ide.primary.current_interface = ide.primary.master;
+        }
+        if(ide.secondary)
+        {
+            ide.secondary.master.device_reset();
+            ide.secondary.slave.device_reset();
+            ide.secondary.device_control_reg = 0;
+            ide.secondary.current_interface = ide.secondary.master;
+        }
+    }
+    if(this.devices.fdc)
+    {
+        trace("CPU", "power_on_reset: reset FDC");
+        this.devices.fdc.reset_fdc();
+    }
+    if(this.devices.uart0)
+    {
+        trace("CPU", "power_on_reset: reset UART0");
+        this.devices.uart0.reset();
+    }
+    if(this.devices.uart1)
+    {
+        this.devices.uart1.reset();
+    }
+    if(this.devices.uart2)
+    {
+        this.devices.uart2.reset();
+    }
+    if(this.devices.uart3)
+    {
+        this.devices.uart3.reset();
+    }
+    if(this.devices.sb16)
+    {
+        trace("CPU", "power_on_reset: reset SB16");
+        this.devices.sb16.reset();
+    }
+    if(this.devices.net)
+    {
+        trace("CPU", "power_on_reset: reset NE2K");
+        this.devices.net.reset();
+    }
+    if(this.devices.virtio_9p)
+    {
+        this.devices.virtio_9p.reset();
+    }
+    if(this.devices.virtio_console)
+    {
+        this.devices.virtio_console.reset();
+    }
+    if(this.devices.virtio_net)
+    {
+        this.devices.virtio_net.reset();
+    }
+    if(this.devices.virtio_balloon)
+    {
+        this.devices.virtio_balloon.reset();
+    }
+    if(this.devices.acpi)
+    {
+        trace("CPU", "power_on_reset: reset ACPI");
+        this.devices.acpi.status = 1;
+        this.devices.acpi.pm1_status = 0;
+        this.devices.acpi.pm1_enable = 0;
+    }
+
+    // 3. Clear shutdown request flag
+    this.shutdown_requested = false;
+
+    // 4. Load BIOS and start
+    trace("CPU", "power_on_reset: loading BIOS");
+    this.load_bios();
+    trace("CPU", "power_on_reset: complete");
 };
 
 CPU.prototype.reset_memory = function()
@@ -1253,6 +1494,22 @@ CPU.prototype.init = function(settings, device_bus)
             this.devices.sb16 = new SB16(this, device_bus);
         }
     }
+
+    // APM/ACPI shutdown ports
+    // SeaBIOS (CONFIG_QEMU) uses port 0x604 for power-off
+    // Bochs and some APM implementations use port 0x8900
+    // Old QEMU uses port 0x9999
+    this.shutdown_requested = false;
+    const shutdown_handler = function(value)
+    {
+        console.log("[v86] Shutdown signal received on I/O port, value=" + value.toString(16));
+        this.shutdown_requested = true;
+        this.bus.send("emulator-shutdown");
+    };
+    this.io.register_write(0x604, this, shutdown_handler, shutdown_handler, shutdown_handler);
+    this.io.register_write(0x8900, this, shutdown_handler, shutdown_handler, shutdown_handler);
+    this.io.register_write(0x3c00, this, shutdown_handler, shutdown_handler, shutdown_handler);
+    this.io.register_write(0x9999, this, shutdown_handler, shutdown_handler, shutdown_handler);
 
     if(settings.multiboot)
     {

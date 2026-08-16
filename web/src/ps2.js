@@ -833,8 +833,11 @@ PS2.prototype.port64_write = function(write_byte)
         break;
     case 0xFE:
         dbg_log("CPU reboot via PS2");
-        this.cpu.reboot_internal();
-        break;
+        this.cpu.reboot_internal();        // Ensure the CPU keeps running after reboot.
+        // reboot_internal only resets CPU/device state; if the execution
+        // loop was stopped (e.g. after a guest shutdown), it needs to be
+        // restarted. Notify the upper layer via the bus.
+        this.cpu.bus.send("emulator-reboot");        break;
     default:
         dbg_log("port 64: Unimplemented command byte: " + h(write_byte), LOG_PS2);
     }

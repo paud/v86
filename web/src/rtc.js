@@ -146,6 +146,25 @@ RTC.prototype.set_state = function(state)
     this.cmos_diag_status = state[14] || 0;
 };
 
+RTC.prototype.reset = function()
+{
+    this.cmos_index = 0;
+    this.cmos_data.fill(0);
+    this.rtc_time = Date.now();
+    this.last_update = this.rtc_time;
+    this.next_interrupt = 0;
+    this.next_interrupt_alarm = 0;
+    this.periodic_interrupt = false;
+    this.periodic_interrupt_time = 1000 / 1024;
+    this.cmos_a = 0x26;
+    this.cmos_b = 2;
+    this.cmos_c = 0;
+    this.nmi_disabled = 0;
+    this.update_interrupt = false;
+    this.update_interrupt_time = 0;
+    this.cmos_diag_status = 0;
+};
+
 RTC.prototype.timer = function(time, legacy_mode)
 {
     time = Date.now(); // XXX
