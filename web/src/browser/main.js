@@ -5,6 +5,7 @@ import { h, pad0, pads, hex_dump, dump_file, download, round_up_to_next_power_of
 import { log_data, LOG_LEVEL, set_log_level } from "../log.js";
 import * as iso9660 from "../iso9660.js";
 import * as persist from "./persist.js";
+import * as disk_persist from "./disk_persist.js";
 import { trace } from "./trace.js";
 
 
@@ -2078,20 +2079,17 @@ async function start_emulation(profile, query_args)
     const new_query_args = new Map();
     new_query_args.set("profile", profile?.id || "custom");
 
-    // IndexedDB persistence key
-    const persistKey = "v86-state-" + (profile?.id || "custom");
+    // IndexedDB persistence: dirty disk blocks only, always cold boot.
+    // We never restore a full VM snapshot; the profile's own state (if any)
+    // is used as the initial state as configured.
     const persistEnabled = $("persist_state")?.checked !== false;
-
-    // Check for locally persisted state
-    let savedState = null;
-    if(persistEnabled)
-    {
-        savedState = await persist.loadState(persistKey);
-        if(savedState)
-        {
-            console.log("[v86-persist] Found saved state (" + (savedState.byteLength / 1024 / 1024).toFixed(1) + " MB), will restore from IndexedDB");
-        }
-    }
+    const diskKeys = {
+        hda: (profile?.id || "custom") + "-hda",
+        hdb: (profile?.id || "custom") + "-hdb",
+        fda: (profile?.id || "custom") + "-fda",
+        fdb: (profile?.id || "custom") + "-fdb",
+        cdrom: (profile?.id || "custom") + "-cdrom",
+    };
 
     const settings = {};
 
@@ -2099,15 +2097,7 @@ async function start_emulation(profile, query_args)
     {
         set_title(profile.name);
 
-        // Use locally persisted state if available, otherwise use server state
-        if(savedState)
-        {
-            settings.initial_state = { buffer: savedState };
-        }
-        else
-        {
-            settings.initial_state = profile.state;
-        }
+        settings.initial_state = profile.state;
         settings.filesystem = profile.filesystem;
         settings.fda = profile.fda;
         settings.fdb = profile.fdb;
@@ -2413,6 +2403,8 @@ async function start_emulation(profile, query_args)
         push_state(new_query_args);
     }
 
+    trace("Main", "creating V86, bios=" + (settings.bios ? JSON.stringify(settings.bios) : "null") +
+          " initial_state=" + (settings.initial_state ? "yes" : "no"));
     const emulator = new V86({
         wasm_path: "build/" + (DEBUG ? "v86-debug.wasm" : "v86.wasm") + query_append(),
         screen: {
@@ -2456,18 +2448,40 @@ async function start_emulation(profile, query_args)
 
     if(DEBUG) window.emulator = emulator;
 
-    emulator.add_listener("emulator-ready", function()
+    emulator.add_listener("emulator-ready", async function()
     {
         if(DEBUG)
         {
             debug_start(emulator);
         }
 
-        // Start auto-saving state to IndexedDB every 30 seconds
+        // Restore dirty disk blocks from IndexedDB into the disk buffers,
+        // then let the VM boot normally (cold boot from BIOS / profile state).
         if(persistEnabled)
         {
-            persist.startAutoSave(persistKey, () => emulator.save_state());
-            console.log("[v86-persist] Auto-save enabled for key: " + persistKey);
+            const cpu = emulator.v86.cpu;
+            const disks = [
+                ["hda", cpu.devices.ide && cpu.devices.ide.primary && cpu.devices.ide.primary.master.buffer],
+                ["hdb", cpu.devices.ide && cpu.devices.ide.primary && cpu.devices.ide.primary.slave.buffer],
+                ["fda", cpu.devices.fdc && cpu.devices.fdc.drives[0] && cpu.devices.fdc.drives[0].buffer],
+                ["fdb", cpu.devices.fdc && cpu.devices.fdc.drives[1] && cpu.devices.fdc.drives[1].buffer],
+                ["cdrom", cpu.devices.cdrom && cpu.devices.cdrom.buffer],
+            ];
+
+            for(const [type, buffer] of disks)
+            {
+                if(!buffer) continue;
+                const blocks = await disk_persist.loadDirtyBlocks(diskKeys[type]);
+                if(blocks && blocks.length)
+                {
+                    if(disk_persist.applyDirtyBlocks(buffer, blocks))
+                    {
+                        console.log("[v86-disk] Restored " + blocks.length +
+                            " dirty blocks into " + type);
+                    }
+                }
+            }
+            console.log("[v86-disk] Dirty-block restore complete");
         }
 
         if(emulator.v86.cpu.wm.exports["profiler_is_enabled"]())
@@ -2498,7 +2512,7 @@ async function start_emulation(profile, query_args)
             }, 3000);
         }
 
-        init_ui(profile, settings, emulator, persistKey, persistEnabled);
+        init_ui(profile, settings, emulator, diskKeys, persistEnabled);
 
         if(query_args?.has("c"))
         {
@@ -2547,7 +2561,7 @@ async function start_emulation(profile, query_args)
  * @param {Object} settings
  * @param {V86} emulator
  */
-function init_ui(profile, settings, emulator, persistKey, persistEnabled)
+function init_ui(profile, settings, emulator, diskKeys, persistEnabled)
 {
     $("loading").style.display = "none";
     $("runtime_options").style.display = "none";
@@ -2615,10 +2629,6 @@ function init_ui(profile, settings, emulator, persistKey, persistEnabled)
                 trace("Main", "Run button: powering on (cold boot)");
                 powered_off = false;
                 emulator.power_on();
-                if(persistEnabled)
-                {
-                    persist.startAutoSave(persistKey, () => emulator.save_state());
-                }
             }
             else
             {
@@ -2650,10 +2660,34 @@ function init_ui(profile, settings, emulator, persistKey, persistEnabled)
         loading.textContent = "The guest operating system has shut down.\nClick Start to power on, or Exit to return to setup.";
     });
 
+    async function flushDirtyBlocksToDisk()
+    {
+        if(!persistEnabled) return;
+        const cpu = emulator.v86.cpu;
+        const disks = [
+            ["hda", cpu.devices.ide && cpu.devices.ide.primary && cpu.devices.ide.primary.master.buffer],
+            ["hdb", cpu.devices.ide && cpu.devices.ide.primary && cpu.devices.ide.primary.slave.buffer],
+            ["fda", cpu.devices.fdc && cpu.devices.fdc.drives[0] && cpu.devices.fdc.drives[0].buffer],
+            ["fdb", cpu.devices.fdc && cpu.devices.fdc.drives[1] && cpu.devices.fdc.drives[1].buffer],
+            ["cdrom", cpu.devices.cdrom && cpu.devices.cdrom.buffer],
+        ];
+        for(const [type, buffer] of disks)
+        {
+            if(!buffer) continue;
+            const blocks = disk_persist.extractDirtyBlocks(buffer);
+            if(blocks && blocks.length)
+            {
+                await disk_persist.saveDirtyBlocks(diskKeys[type], blocks);
+            }
+        }
+    }
+
     $("power_off").onclick = async function()
     {
         trace("Main", "Power Off clicked, cpu_is_running=" + emulator.cpu_is_running);
         persist.stopAutoSave();
+        // Flush dirty disk blocks to IndexedDB before resetting
+        await flushDirtyBlocksToDisk();
         await emulator.power_off();
         powered_off = true;
         trace("Main", "Power Off: complete");
@@ -2666,6 +2700,21 @@ function init_ui(profile, settings, emulator, persistKey, persistEnabled)
         loading.style.display = "block";
         loading.textContent = "Emulator powered off.\nClick Start to power on, or Exit to return to setup.";
         $("power_off").blur();
+    };
+
+    $("power_on").onclick = function()
+    {
+        trace("Main", "Power On clicked, cpu_is_running=" + emulator.cpu_is_running);
+        if(emulator.cpu_is_running)
+        {
+            trace("Main", "Power On: already running");
+            return;
+        }
+        $("loading").style.display = "none";
+        powered_off = false;
+        emulator.power_on();
+        $("run").textContent = "Pause";
+        $("power_on").blur();
     };
 
     $("lock_mouse").onclick = function()
@@ -2985,10 +3034,6 @@ function init_ui(profile, settings, emulator, persistKey, persistEnabled)
             emulator.v86.run();
         }
         $("run").textContent = "Pause";
-        if(persistEnabled)
-        {
-            persist.startAutoSave(persistKey, () => emulator.save_state());
-        }
         $("reset").blur();
     };
 
@@ -3390,11 +3435,13 @@ function init_ui(profile, settings, emulator, persistKey, persistEnabled)
 
     $("clear_persist").onclick = async function()
     {
-        if(confirm("Delete the auto-saved state from this browser?\n\nThis cannot be undone. The next page load will start from the server snapshot."))
+        if(confirm("Delete all saved disk changes from this browser?\n\nThis cannot be undone. The next cold boot will use the original server image."))
         {
-            await persist.deleteState(persistKey);
-            persist.stopAutoSave();
-            alert("Saved state deleted. Refresh the page to start from the server snapshot.");
+            for(const key of Object.values(diskKeys))
+            {
+                await disk_persist.deleteDirtyBlocks(key);
+            }
+            alert("Saved disk changes deleted.");
         }
         $("clear_persist").blur();
     };

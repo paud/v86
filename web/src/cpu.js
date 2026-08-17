@@ -932,7 +932,8 @@ CPU.prototype.unpack_memory = function(bitmap, packed_memory)
 
 CPU.prototype.reboot_internal = function()
 {
-    trace("CPU", "reboot_internal: resetting CPU");
+    trace("CPU", "reboot_internal: resetting CPU (caller: " +
+        (new Error().stack.split("\n")[2] || "unknown").trim() + ")");
     this.reset_cpu();
 
     this.fw_value = [];
@@ -995,6 +996,10 @@ CPU.prototype.reboot_internal = function()
         vga.dac_map.fill(0);
         vga.vga_memory.fill(0);
         vga.svga_memory.fill(0);
+        if(vga.screen && vga.screen.set_mode)
+        {
+            vga.screen.set_mode(false);
+        }
         vga.set_size_text(vga.max_cols, vga.max_rows);
         vga.complete_redraw();
     }
@@ -1027,6 +1032,61 @@ CPU.prototype.reboot_internal = function()
         this.devices.fdc.reset_fdc();
     }
 
+    // Reset all remaining devices that have reset methods
+    if(this.devices.pit)
+    {
+        trace("CPU", "reboot_internal: reset PIT");
+        this.devices.pit.reset();
+    }
+    if(this.devices.rtc)
+    {
+        trace("CPU", "reboot_internal: reset RTC");
+        this.devices.rtc.reset();
+    }
+    if(this.devices.dma)
+    {
+        trace("CPU", "reboot_internal: reset DMA");
+        this.devices.dma.reset();
+    }
+    if(this.devices.pci)
+    {
+        this.devices.pci.reset();
+    }
+    if(this.devices.uart0) this.devices.uart0.reset();
+    if(this.devices.uart1) this.devices.uart1.reset();
+    if(this.devices.uart2) this.devices.uart2.reset();
+    if(this.devices.uart3) this.devices.uart3.reset();
+    if(this.devices.sb16)
+    {
+        trace("CPU", "reboot_internal: reset SB16");
+        this.devices.sb16.reset();
+    }
+    if(this.devices.net)
+    {
+        this.devices.net.reset();
+    }
+    if(this.devices.virtio_balloon)
+    {
+        this.devices.virtio_balloon.reset();
+    }
+    if(this.devices.acpi)
+    {
+        this.devices.acpi.status = 1;
+        this.devices.acpi.pm1_status = 0;
+        this.devices.acpi.pm1_enable = 0;
+    }
+
+    // Note: We do NOT clear RAM here. Clearing RAM zeroes the IDT that
+    // the previous OS set up. When BIOS briefly enters protected mode
+    // during POST and executes INT3, it looks up the IDT; with all-zero
+    // descriptors the selector is 0 (null), causing a panic in the
+    // unimplemented #GP handler. Leaving RAM intact means the previous
+    // IDT remains valid until BIOS replaces it with its own.
+    // Disk dirty blocks are preserved separately in block_cache.
+
+    this.shutdown_requested = false;
+    this.reboot_requested = false;
+
     trace("CPU", "reboot_internal: loading BIOS");
     this.load_bios();
     trace("CPU", "reboot_internal: done");
@@ -1040,11 +1100,24 @@ CPU.prototype.reboot_internal = function()
  */
 CPU.prototype.power_on_reset = function()
 {
-    trace("CPU", "power_on_reset: beginning full reset");
+    trace("CPU", "power_on_reset: beginning full reset, bios.main=" +
+          (this.bios.main ? this.bios.main.byteLength + " bytes" : "null"));
 
     // 1. Reset CPU core (registers, cache, mode, etc.)
     this.reset_cpu();
     this.fw_value = [];
+
+    // 2. Clear conventional memory (0 - 640K) for a cold boot.
+    // We don't clear extended memory because:
+    // - VGA framebuffer at 0xA0000-0xBFFFF is mmap'd and reset by VGA
+    // - BIOS area at 0xF0000-0xFFFFF is reloaded by load_bios()
+    // - Some BIOS/option ROMs may expect extended memory to retain data
+    trace("CPU", "power_on_reset: clearing conventional RAM (0-640K)");
+    this.mem8.fill(0, 0, 0xA0000);
+
+    // Note: mmap-registered regions (VGA framebuffer, PCI ROMs, etc.)
+    // are backed by separate buffers and are not affected by mem8.fill.
+    // They are reset individually by their respective device resets.
 
     // 2. Reset all devices
     if(this.devices.pci)
@@ -1061,6 +1134,18 @@ CPU.prototype.power_on_reset = function()
     {
         trace("CPU", "power_on_reset: reset RTC");
         this.devices.rtc.reset();
+        // Re-fill CMOS with hardware config (memory size, boot order, etc.)
+        // since RTC.reset() cleared it.
+        if(this._settings)
+        {
+            trace("CPU", "power_on_reset: filling CMOS, memory_size=" +
+                  this._settings.memory_size);
+            this.fill_cmos(this.devices.rtc, this._settings);
+        }
+        else
+        {
+            trace("CPU", "power_on_reset: WARNING - no _settings, CMOS not filled");
+        }
     }
     if(this.devices.dma)
     {
@@ -1076,6 +1161,8 @@ CPU.prototype.power_on_reset = function()
         vga.svga_offset = 0;
         vga.svga_offset_x = 0;
         vga.svga_offset_y = 0;
+        vga.svga_width = 0;
+        vga.svga_height = 0;
         vga.dispi_enable_value = 0;
         vga.graphical_mode = false;
         vga.crtc.fill(0);
@@ -1099,11 +1186,32 @@ CPU.prototype.power_on_reset = function()
         vga.planar_setreset = 0;
         vga.planar_setreset_enable = 0;
         vga.miscellaneous_graphics_register = 0;
+        vga.latch_dword = 0;
         vga.dac_mask = 0xFF;
         vga.dac_state = 0;
         vga.dac_map.fill(0);
+        vga.vga256_palette.fill(0);
         vga.vga_memory.fill(0);
         vga.svga_memory.fill(0);
+        vga.svga_version = 0xB0C5;
+        vga.cursor_enabled = false;
+        vga.cursor_address = 0;
+        vga.cursor_scanline_start = 0xE;
+        vga.cursor_scanline_end = 0xF;
+        vga.scan_line = 0;
+        vga.line_compare = 0;
+        vga.color_compare = 0;
+        vga.color_dont_care = 0;
+        vga.color_plane_enable = 0;
+        if(vga.screen && vga.screen.set_mode)
+        {
+            vga.screen.set_mode(false);
+        }
+        // Reset canvas dimensions so the guest OS sets them fresh
+        if(vga.screen && vga.screen.reset_graphic)
+        {
+            vga.screen.reset_graphic();
+        }
         vga.set_size_text(vga.max_cols, vga.max_rows);
         vga.complete_redraw();
     }
@@ -1187,12 +1295,19 @@ CPU.prototype.power_on_reset = function()
         this.devices.acpi.pm1_enable = 0;
     }
 
-    // 3. Clear shutdown request flag
+    // 3. Clear shutdown/reboot request flags
     this.shutdown_requested = false;
+    this.reboot_requested = false;
 
-    // 4. Load BIOS and start
+    // 4. Load BIOS and verify
     trace("CPU", "power_on_reset: loading BIOS");
     this.load_bios();
+
+    // Verify BIOS is loaded at reset vector
+    const reset_byte = this.mem8[0xFFFF0];
+    const bios_start = this.mem8[0x100000 - (this.bios.main ? this.bios.main.byteLength : 0)];
+    trace("CPU", "power_on_reset: BIOS at 0xFFFF0=" + h(reset_byte) +
+          " CS=0xF000 IP=0xFFF0, BIOS size=" + (this.bios.main ? this.bios.main.byteLength : 0));
     trace("CPU", "power_on_reset: complete");
 };
 
@@ -1233,6 +1348,9 @@ CPU.prototype.create_memory = function(size, minimum_size)
  */
 CPU.prototype.init = function(settings, device_bus)
 {
+    // Save settings for re-initialization on power_on_reset
+    this._settings = settings;
+
     this.create_memory(
         settings.memory_size || 64 * 1024 * 1024,
         settings.initrd ? 64 * 1024 * 1024 : 1024 * 1024,
@@ -1254,6 +1372,8 @@ CPU.prototype.init = function(settings, device_bus)
 
     this.bios.main = settings.bios;
     this.bios.vga = settings.vga_bios;
+    trace("CPU", "init: bios.main=" + (settings.bios ? settings.bios.byteLength + " bytes" : "null") +
+          " vga_bios=" + (settings.vga_bios ? settings.vga_bios.byteLength + " bytes" : "null"));
 
     this.load_bios();
 
@@ -1500,6 +1620,7 @@ CPU.prototype.init = function(settings, device_bus)
     // Bochs and some APM implementations use port 0x8900
     // Old QEMU uses port 0x9999
     this.shutdown_requested = false;
+    this.reboot_requested = false;
     const shutdown_handler = function(value)
     {
         console.log("[v86] Shutdown signal received on I/O port, value=" + value.toString(16));
@@ -1950,6 +2071,7 @@ CPU.prototype.load_bios = function()
     if(!bios)
     {
         dbg_log("Warning: No BIOS");
+        trace("CPU", "load_bios: WARNING - no BIOS loaded!");
         return;
     }
 
@@ -1959,11 +2081,16 @@ CPU.prototype.load_bios = function()
     var data = new Uint8Array(bios),
         start = 0x100000 - bios.byteLength;
 
+    trace("CPU", "load_bios: writing " + bios.byteLength + " bytes at 0x" +
+          start.toString(16) + ", first byte=0x" + data[0].toString(16));
     this.write_blob(data, start);
+    trace("CPU", "load_bios: verify at 0xFFFF0=0x" + this.mem8[0xFFFF0].toString(16));
 
     if(vga_bios)
     {
         dbg_assert(vga_bios instanceof ArrayBuffer);
+
+        trace("CPU", "load_bios: loading VGA BIOS (" + vga_bios.byteLength + " bytes) at 0xC0000");
 
         // load vga bios
         var vga_bios8 = new Uint8Array(vga_bios);

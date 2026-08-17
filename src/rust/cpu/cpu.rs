@@ -4597,10 +4597,13 @@ pub unsafe fn reset_cpu() {
     *protected_mode = false;
 
     // http://www.sandpile.org/x86/initial.htm
-    *idtr_size = 0;
+    // After reset, IDTR/GDTR limits are 0xFFFF on real hardware.
+    // A limit of 0 causes #GP when BIOS briefly enters protected mode
+    // and executes software interrupts (e.g. INT3) during POST.
+    *idtr_size = 0xFFFF;
     *idtr_offset = 0;
 
-    *gdtr_size = 0;
+    *gdtr_size = 0xFFFF;
     *gdtr_offset = 0;
 
     *cr = 1 << 30 | 1 << 29 | 1 << 4;

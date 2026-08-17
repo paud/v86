@@ -124,7 +124,7 @@ export function PCI(cpu)
             if((this.pci_addr[1] & 0x06) === 0x02 && (out_byte & 0x06) === 0x06)
             {
                 dbg_log("CPU reboot via PCI");
-                cpu.reboot_internal();
+                cpu.reboot_requested = true;
                 return;
             }
 

@@ -69,6 +69,17 @@ v86.prototype.do_tick = function()
         return;
     }
 
+    // Check if a reboot was requested during instruction execution
+    // (e.g. PS2 controller 0xFE command). We defer it until now so
+    // that the current JIT/interpreter frame has fully exited.
+    if(this.cpu.reboot_requested)
+    {
+        trace("Main", "do_tick: processing deferred reboot");
+        this.cpu.reboot_requested = false;
+        this.cpu.reboot_internal();
+        this.bus.send("emulator-reboot");
+    }
+
     this.next_tick(t);
 };
 

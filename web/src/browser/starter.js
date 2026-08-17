@@ -54,6 +54,15 @@ export function V86(options)
     this.cpu_is_running = false;
     this.cpu_exception_hook = function(n) {};
 
+    // Save options for later use (e.g. reloading BIOS on power_on)
+    this.options = options;
+    // Save BIOS URLs separately because options.bios gets replaced with
+    // an ArrayBuffer after the file loads (losing the .url property).
+    this.bios_url = options.bios?.url || null;
+    this.vga_bios_url = options.vga_bios?.url || null;
+    trace("Starter", "constructor: bios=" + JSON.stringify(options.bios)?.substring(0, 100) +
+          " bios_url=" + this.bios_url);
+
     const bus = Bus.create();
     this.bus = bus[0];
     this.emulator_bus = bus[1];
@@ -193,6 +202,13 @@ export function V86(options)
 V86.prototype.continue_init = async function(emulator, options)
 {
     trace("Starter", "continue_init: setting up bus events");
+
+    // Save BIOS URLs for potential reload during power_on_reset
+    this.bios_url = options.bios?.url || null;
+    this.vga_bios_url = options.vga_bios?.url || null;
+    trace("Starter", "continue_init: bios_url=" + this.bios_url +
+          " vga_bios_url=" + this.vga_bios_url +
+          " bios type=" + (options.bios ? (options.bios.url ? "url" : typeof options.bios) : "null"));
 
     this.bus.register("emulator-stopped", function()
     {
@@ -418,6 +434,7 @@ V86.prototype.continue_init = async function(emulator, options)
 
             case "bios":
                 settings.bios = buffer.buffer;
+                trace("Starter", "BIOS loaded: " + buffer.buffer.byteLength + " bytes");
                 break;
             case "vga_bios":
                 settings.vga_bios = buffer.buffer;
@@ -895,14 +912,47 @@ V86.prototype.power_off = async function()
  * Power on: boot from BIOS after a power_off().
  * If the emulator is already running, does nothing.
  */
-V86.prototype.power_on = function()
+V86.prototype.power_on = async function()
 {
-    trace("Starter", "power_on() called, cpu_is_running=" + this.cpu_is_running);
+    trace("Starter", "power_on() called, cpu_is_running=" + this.cpu_is_running +
+          " bios_url=" + this.bios_url + " bios.main=" +
+          (this.v86.cpu.bios.main ? this.v86.cpu.bios.main.byteLength : "null"));
     if(this.cpu_is_running)
     {
         trace("Starter", "power_on: already running");
         return;
     }
+    // If BIOS wasn't loaded into CPU, fetch it from the saved URL.
+    var bios_url = this.bios_url || "bios/seabios.bin";
+    var vga_bios_url = this.vga_bios_url || "bios/vgabios.bin";
+    if(!this.v86.cpu.bios.main && bios_url)
+    {
+        trace("Starter", "power_on: BIOS not loaded, fetching from " + bios_url);
+        try
+        {
+            const result = await new Promise((resolve, reject) => {
+                load_file(bios_url, { done: resolve, error: reject });
+            });
+            this.v86.cpu.bios.main = result;
+            if(vga_bios_url)
+            {
+                const vga_result = await new Promise((resolve, reject) => {
+                    load_file(vga_bios_url, { done: resolve, error: reject });
+                });
+                this.v86.cpu.bios.vga = vga_result;
+            }
+            trace("Starter", "power_on: BIOS reloaded (" + result.byteLength + " bytes)");
+        }
+        catch(e)
+        {
+            trace("Starter", "power_on: failed to reload BIOS: " + e);
+        }
+    }
+    // Do a full power-on reset (clear RAM, reset devices, reload BIOS)
+    this.v86.cpu.power_on_reset();
+    var reset_byte = this.v86.cpu.mem8[0xFFFF0];
+    trace("Starter", "power_on: BIOS at 0xFFFF0=0x" + reset_byte.toString(16) +
+          " CS=0xF000 IP=0xFFF0");
     this.v86.run();
     trace("Starter", "power_on() done");
 };
