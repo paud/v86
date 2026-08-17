@@ -78,6 +78,10 @@ v86.prototype.do_tick = function()
         this.cpu.reboot_requested = false;
         this.cpu.reboot_internal();
         this.bus.send("emulator-reboot");
+        // After reboot, schedule next tick immediately (don't use old
+        // timer value which may be large if CPU was in HLT state).
+        this.next_tick(0);
+        return;
     }
 
     this.next_tick(t);

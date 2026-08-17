@@ -1042,6 +1042,12 @@ CPU.prototype.reboot_internal = function()
     {
         trace("CPU", "reboot_internal: reset RTC");
         this.devices.rtc.reset();
+        // Re-fill CMOS with hardware config (memory size, boot order, etc.)
+        // since RTC.reset() cleared it.
+        if(this._settings)
+        {
+            this.fill_cmos(this.devices.rtc, this._settings);
+        }
     }
     if(this.devices.dma)
     {
