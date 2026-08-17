@@ -3047,38 +3047,89 @@ function init_ui(profile, settings, emulator, diskKeys, persistEnabled)
     {
         var elem = $("get_" + type + "_image");
 
-        if(!obj || obj.async)
+        if(!obj)
         {
             elem.style.display = "none";
+            return;
         }
 
-        elem.onclick = function(e)
+        // For async (partfile) buffers, export by reading all chunks
+        // (cached blocks + downloading uncached blocks from server).
+        if(obj.async)
         {
-            const buffer = get_buffer();
-            const filename = buffer.file && buffer.file.name || ((profile?.id || "v86") + "-" + type + (type === "cdrom" ? ".iso" : ".img"));
+            elem.onclick = async function()
+            {
+                const buffer = get_buffer();
+                const filename = (profile?.id || "v86") + "-" + type + (type === "cdrom" ? ".iso" : ".img");
+                const size = buffer.byteLength;
+                const chunkSize = buffer.fixed_chunk_size || 262144;
+                const totalChunks = Math.ceil(size / chunkSize);
+                const fullDisk = new Uint8Array(size);
+                let loaded = 0;
 
-            if(buffer.get_as_file)
-            {
-                var file = buffer.get_as_file(filename);
-                download(file, filename);
-            }
-            else
-            {
-                buffer.get_buffer(function(b)
+                elem.textContent = "Exporting... 0%";
+                elem.disabled = true;
+
+                // Process chunks in batches to avoid overwhelming the browser
+                const batchSize = 8;
+                for(let batchStart = 0; batchStart < totalChunks; batchStart += batchSize)
                 {
-                    if(b)
+                    const batchEnd = Math.min(batchStart + batchSize, totalChunks);
+                    await Promise.all(Array.from({length: batchEnd - batchStart}, (_, i) =>
                     {
-                        dump_file(b, filename);
-                    }
-                    else
-                    {
-                        alert("The file could not be loaded. Maybe it's too big?");
-                    }
-                });
-            }
+                        const chunkIndex = batchStart + i;
+                        const offset = chunkIndex * chunkSize;
+                        const len = Math.min(chunkSize, size - offset);
+                        return new Promise(resolve =>
+                        {
+                            buffer.get(offset, len, function(data)
+                            {
+                                fullDisk.set(data, offset);
+                                loaded++;
+                                const pct = Math.round(loaded / totalChunks * 100);
+                                elem.textContent = "Exporting... " + pct + "%";
+                                resolve();
+                            });
+                        });
+                    }));
+                }
 
-            elem.blur();
-        };
+                dump_file(fullDisk.buffer, filename);
+                elem.textContent = "Get " + type + " image";
+                elem.disabled = false;
+                elem.blur();
+            };
+        }
+        else
+        {
+            elem.onclick = function(e)
+            {
+                const buffer = get_buffer();
+                const filename = buffer.file && buffer.file.name || ((profile?.id || "v86") + "-" + type + (type === "cdrom" ? ".iso" : ".img"));
+
+                if(buffer.get_as_file)
+                {
+                    var file = buffer.get_as_file(filename);
+                    download(file, filename);
+                }
+                else
+                {
+                    buffer.get_buffer(function(b)
+                    {
+                        if(b)
+                        {
+                            dump_file(b, filename);
+                        }
+                        else
+                        {
+                            alert("The file could not be loaded. Maybe it's too big?");
+                        }
+                    });
+                }
+
+                elem.blur();
+            };
+        }
     }
 
     function pick_file(multiple)
