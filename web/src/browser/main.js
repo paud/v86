@@ -981,6 +981,18 @@ function onload()
             name: "Windows 98",
         },
         {
+            id: "windows98-new-boot",
+            memory_size: 128 * 1024 * 1024,
+            hda: {
+                url: host + "windows98-new/.img",
+                size: 300 * 1024 * 1024,
+                async: true,
+                fixed_chunk_size: 256 * 1024,
+                use_parts: true,
+            },
+            name: "Windows 98 (new)",
+        },
+        {
             id: "windows95",
             memory_size: 64 * 1024 * 1024,
             hda: {
@@ -2446,6 +2458,9 @@ async function start_emulation(profile, query_args)
         cpuid_level: settings.cpuid_level,
     });
 
+    // Expose for debugging
+    window.emulator = emulator;
+
     if(DEBUG) window.emulator = emulator;
 
     emulator.add_listener("emulator-ready", async function()
@@ -3468,6 +3483,27 @@ function init_ui(profile, settings, emulator, diskKeys, persistEnabled)
             try
             {
                 await emulator.restore_state(e.target.result);
+
+                // After restore_state, buffer.set_state() clears the block_cache
+                // and replaces it with only the blocks from the state file.
+                // Re-apply IndexedDB blocks so previously persisted changes
+                // are not lost (state blocks take priority).
+                if(persistEnabled)
+                {
+                    const cpu = emulator.v86.cpu;
+                    const disks = [
+                        ["hda", cpu.devices.ide && cpu.devices.ide.primary && cpu.devices.ide.primary.master.buffer],
+                        ["hdb", cpu.devices.ide && cpu.devices.ide.primary && cpu.devices.ide.primary.slave.buffer],
+                        ["fda", cpu.devices.fdc && cpu.devices.fdc.drives[0] && cpu.devices.fdc.drives[0].buffer],
+                        ["fdb", cpu.devices.fdc && cpu.devices.fdc.drives[1] && cpu.devices.fdc.drives[1].buffer],
+                        ["cdrom", cpu.devices.cdrom && cpu.devices.cdrom.buffer],
+                    ];
+                    for(const [type, buffer] of disks)
+                    {
+                        if(!buffer || !diskKeys[type]) continue;
+                        await disk_persist.reapplyAfterStateRestore(diskKeys[type], buffer);
+                    }
+                }
             }
             catch(err)
             {
@@ -3482,6 +3518,44 @@ function init_ui(profile, settings, emulator, diskKeys, persistEnabled)
             }
         };
         filereader.readAsArrayBuffer(file);
+    };
+
+    $("save_disk_changes").onclick = async function()
+    {
+        const elem = $("save_disk_changes");
+        elem.disabled = true;
+        elem.textContent = "Saving...";
+        try
+        {
+            const cpu = emulator.v86.cpu;
+            const disks = [
+                ["hda", cpu.devices.ide && cpu.devices.ide.primary && cpu.devices.ide.primary.master && cpu.devices.ide.primary.master.buffer],
+                ["hdb", cpu.devices.ide && cpu.devices.ide.primary && cpu.devices.ide.primary.slave && cpu.devices.ide.primary.slave.buffer],
+                ["fda", cpu.devices.fdc && cpu.devices.fdc.drives[0] && cpu.devices.fdc.drives[0].buffer],
+                ["fdb", cpu.devices.fdc && cpu.devices.fdc.drives[1] && cpu.devices.fdc.drives[1].buffer],
+                ["cdrom", cpu.devices.cdrom && cpu.devices.cdrom.buffer],
+            ];
+
+            let totalBlocks = 0;
+            for(const [type, buffer] of disks)
+            {
+                if(!buffer || !diskKeys[type]) continue;
+                const blocks = disk_persist.extractDirtyBlocks(buffer);
+                if(blocks && blocks.length)
+                {
+                    await disk_persist.saveDirtyBlocks(diskKeys[type], blocks);
+                    totalBlocks += blocks.length;
+                }
+            }
+            elem.textContent = "Saved (" + totalBlocks + " blocks)";
+            setTimeout(() => { elem.textContent = "Save Disk Changes"; elem.disabled = false; }, 2000);
+        }
+        catch(e)
+        {
+            console.error("Failed to save disk changes:", e);
+            elem.textContent = "Save Failed";
+            setTimeout(() => { elem.textContent = "Save Disk Changes"; elem.disabled = false; }, 2000);
+        }
     };
 
     $("clear_persist").onclick = async function()

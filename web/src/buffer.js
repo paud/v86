@@ -476,8 +476,11 @@ AsyncXHRPartfileBuffer.prototype.get = function(offset, len, fn, options)
                             block = new Uint8Array(decompressed);
                         }
 
-                        blocks.set(block, i * this.fixed_chunk_size);
+                        // Overlay cached dirty blocks onto the downloaded chunk
+                        // BEFORE copying into the output buffer.
                         this.handle_read((start_index + i) * this.fixed_chunk_size, this.fixed_chunk_size|0, block);
+
+                        blocks.set(block, i * this.fixed_chunk_size);
 
                         finished++;
                         if(finished === total_count)
