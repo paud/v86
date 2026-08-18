@@ -84,15 +84,24 @@ export function extractDirtyBlocks(buffer)
             }
         }
         console.log("[v86-disk] extractDirtyBlocks: " + blocks.length +
-            " dirty / " + buffer.block_cache.size + " cached blocks");
+            " dirty / " + buffer.block_cache.size + " cached blocks (async)");
         return blocks;
     }
 
-    if(buffer.get_state)
+    if(buffer.buffer instanceof ArrayBuffer && buffer.block_cache_is_write)
     {
-        // Fall back to get_state() for SyncBuffer-like objects; returns
-        // the whole buffer. Callers should avoid this for large disks.
-        return null;
+        // SyncBuffer: extract dirty 256-byte blocks from the in-memory buffer
+        const blocks = [];
+        const BLOCK_SIZE = 256;
+        for(const index of buffer.block_cache_is_write)
+        {
+            const start = index * BLOCK_SIZE;
+            const block = new Uint8Array(buffer.buffer, start, BLOCK_SIZE);
+            blocks.push([index, new Uint8Array(block)]);
+        }
+        console.log("[v86-disk] extractDirtyBlocks: " + blocks.length +
+            " dirty blocks (sync)");
+        return blocks;
     }
 
     return null;
@@ -107,31 +116,60 @@ export function extractDirtyBlocks(buffer)
  */
 export function applyDirtyBlocks(buffer, blocks, overwrite = false)
 {
-    if(!buffer || !blocks || !buffer.block_cache || !buffer.block_cache_is_write)
+    if(!buffer || !blocks) return false;
+
+    const BLOCK_SIZE = 256;
+
+    if(buffer.block_cache && buffer.block_cache_is_write)
     {
-        return false;
+        // AsyncXHRBuffer / AsyncXHRPartfileBuffer / AsyncFileBuffer
+        let applied = 0;
+        let skipped = 0;
+        for(const [index, block] of blocks)
+        {
+            if(!overwrite && buffer.block_cache.has(index))
+            {
+                skipped++;
+                continue;
+            }
+            buffer.block_cache.set(index, block);
+            buffer.block_cache_is_write.add(index);
+            applied++;
+        }
+        if(applied || skipped)
+        {
+            console.log("[v86-disk] applyDirtyBlocks: " + applied + " applied, " +
+                skipped + " skipped (async)");
+        }
+        return true;
     }
 
-    let applied = 0;
-    let skipped = 0;
-    for(const [index, block] of blocks)
+    if(buffer.buffer instanceof ArrayBuffer && buffer.block_cache_is_write)
     {
-        if(!overwrite && buffer.block_cache.has(index))
+        // SyncBuffer: write blocks back into the in-memory buffer
+        let applied = 0;
+        let skipped = 0;
+        for(const [index, block] of blocks)
         {
-            // Block already in cache (e.g., from a loaded state) — keep it
-            skipped++;
-            continue;
+            if(!overwrite && buffer.block_cache_is_write.has(index))
+            {
+                skipped++;
+                continue;
+            }
+            const start = index * BLOCK_SIZE;
+            new Uint8Array(buffer.buffer, start, BLOCK_SIZE).set(block);
+            buffer.block_cache_is_write.add(index);
+            applied++;
         }
-        buffer.block_cache.set(index, block);
-        buffer.block_cache_is_write.add(index);
-        applied++;
+        if(applied || skipped)
+        {
+            console.log("[v86-disk] applyDirtyBlocks: " + applied + " applied, " +
+                skipped + " skipped (sync)");
+        }
+        return true;
     }
-    if(applied || skipped)
-    {
-        console.log("[v86-disk] applyDirtyBlocks: " + applied + " applied, " +
-            skipped + " skipped (already in cache)");
-    }
-    return true;
+
+    return false;
 }
 
 /**
