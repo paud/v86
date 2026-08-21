@@ -702,6 +702,21 @@ export function ScreenAdapter(options, screen_fill_buffer)
         update_scale_graphic();
     };
 
+    this.reset_graphic = function()
+    {
+        // Don't reset canvas dimensions to 0 - that causes
+        // getBoundingClientRect() to return 0 when the guest switches
+        // back to graphical mode, making mouse clicks only register
+        // in a tiny area. Just hide and clear the canvas; the guest
+        // will set proper dimensions via set_size_graphical().
+        graphic_screen.style.display = "none";
+        if(graphic_context)
+        {
+            graphic_context.clearRect(0, 0, graphic_screen.width, graphic_screen.height);
+        }
+        base_scale = 1;
+    };
+
     this.set_scale = function(s_x, s_y)
     {
         scale_x = s_x;

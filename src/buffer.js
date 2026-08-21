@@ -19,6 +19,13 @@ export function SyncBuffer(buffer)
     this.byteLength = buffer.byteLength;
     this.onload = undefined;
     this.onprogress = undefined;
+
+    // Dirty-block tracking for IndexedDB persistence.
+    // Unlike async buffers, we don't store block copies in a Map —
+    // the whole buffer is already in memory, so we just track which
+    // 256-byte blocks have been written.
+    this.block_cache = undefined;
+    this.block_cache_is_write = new Set();
 }
 
 SyncBuffer.prototype.load = function()
@@ -49,6 +56,15 @@ SyncBuffer.prototype.set = function(start, slice, fn)
     dbg_assert(start + slice.byteLength <= this.byteLength);
 
     new Uint8Array(this.buffer, start, slice.byteLength).set(slice);
+
+    // Track dirty 256-byte blocks
+    var start_block = start / BLOCK_SIZE;
+    var block_count = slice.byteLength / BLOCK_SIZE;
+    for(var i = 0; i < block_count; i++)
+    {
+        this.block_cache_is_write.add(start_block + i);
+    }
+
     fn();
 };
 
@@ -69,6 +85,7 @@ SyncBuffer.prototype.get_state = function()
     const state = [];
     state[0] = this.byteLength;
     state[1] = new Uint8Array(this.buffer);
+    state[2] = Array.from(this.block_cache_is_write);
     return state;
 };
 
@@ -79,6 +96,14 @@ SyncBuffer.prototype.set_state = function(state)
 {
     this.byteLength = state[0];
     this.buffer = state[1].slice().buffer;
+    if(state[2])
+    {
+        this.block_cache_is_write = new Set(state[2]);
+    }
+    else
+    {
+        this.block_cache_is_write = new Set();
+    }
 };
 
 /**
@@ -476,8 +501,11 @@ AsyncXHRPartfileBuffer.prototype.get = function(offset, len, fn, options)
                             block = new Uint8Array(decompressed);
                         }
 
-                        blocks.set(block, i * this.fixed_chunk_size);
+                        // Overlay cached dirty blocks onto the downloaded chunk
+                        // BEFORE copying into the output buffer.
                         this.handle_read((start_index + i) * this.fixed_chunk_size, this.fixed_chunk_size|0, block);
+
+                        blocks.set(block, i * this.fixed_chunk_size);
 
                         finished++;
                         if(finished === total_count)
@@ -534,6 +562,9 @@ export function SyncFileBuffer(file)
 
     this.onload = undefined;
     this.onprogress = undefined;
+
+    this.block_cache = undefined;
+    this.block_cache_is_write = new Set();
 }
 
 SyncFileBuffer.prototype.load = function()
@@ -688,6 +719,58 @@ AsyncFileBuffer.prototype.get_as_file = function(name)
 export function buffer_from_object(obj, zstd_decompress_worker)
 {
     // TODO: accept Uint8Array, ArrayBuffer, File, url rather than { url }
+
+    if(obj.blank && obj.size)
+    {
+        // Blank in-memory disk (SyncBuffer) with a valid MBR partition table.
+        // The partition spans the whole disk, so the OS only needs to
+        // format it (no FDISK required).
+        const buffer = new SyncBuffer(new ArrayBuffer(obj.size));
+
+        const totalSectors = Math.floor(obj.size / 512);
+        const startLBA = 63; // standard Windows partition offset
+        const partSectors = totalSectors - startLBA;
+
+        // Partition type:
+        //   0x0E = FAT16 LBA (up to 2GB, best for Windows 98 on small disks)
+        //   0x0C = FAT32 LBA (> 2GB)
+        const partType = partSectors * 512 > 2 * 1024 * 1024 * 1024 ? 0x0C : 0x0E;
+
+        // CHS geometry: 63 sectors/track, 255 heads (max for LBA)
+        const endCyl = Math.min(1023, Math.floor((startLBA + partSectors - 1) / (63 * 255)));
+        const endHead = Math.min(254, Math.floor(((startLBA + partSectors - 1) % (63 * 255)) / 63));
+        const endSect = (((startLBA + partSectors - 1) % (63 * 255)) % 63) + 1;
+
+        const mbr = new Uint8Array(512);
+        // First partition entry at offset 446
+        const p = 446;
+        mbr[p + 0]  = 0x80;                    // boot indicator
+        mbr[p + 1]  = 0x00;                    // starting head
+        mbr[p + 2]  = 0x01;                    // starting sector (1)
+        mbr[p + 3]  = 0x00;                    // starting cylinder (0)
+        mbr[p + 4]  = partType;                // partition type
+        mbr[p + 5]  = endHead;                 // ending head
+        mbr[p + 6]  = endSect | ((endCyl >> 2) & 0xC0); // ending sector + cyl high
+        mbr[p + 7]  = endCyl & 0xFF;           // ending cylinder low
+        // Starting LBA (4 bytes, little-endian)
+        mbr[p + 8]  = startLBA & 0xFF;
+        mbr[p + 9]  = (startLBA >> 8) & 0xFF;
+        mbr[p + 10] = (startLBA >> 16) & 0xFF;
+        mbr[p + 11] = (startLBA >> 24) & 0xFF;
+        // Total sectors in partition (4 bytes, little-endian)
+        mbr[p + 12] = partSectors & 0xFF;
+        mbr[p + 13] = (partSectors >> 8) & 0xFF;
+        mbr[p + 14] = (partSectors >> 16) & 0xFF;
+        mbr[p + 15] = (partSectors >> 24) & 0xFF;
+        // Boot signature
+        mbr[510] = 0x55;
+        mbr[511] = 0xAA;
+
+        // Write through set() so the MBR block is marked dirty
+        buffer.set(0, mbr, function() {});
+
+        return buffer;
+    }
 
     if(obj.buffer instanceof ArrayBuffer)
     {

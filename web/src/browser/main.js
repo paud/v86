@@ -960,17 +960,34 @@ function onload() {
         },
         {
             id: "windows98-new-boot",
-            memory_size: 128 * 1024 * 1024,
+            memory_size: 256 * 1024 * 1024,
+            vga_memory_size: 16 * 1024 * 1024,
+            v86gl: true,
+            v86gl_pci: { port: 0xF100, maxBatchBytes: 16 * 1024 * 1024 },
+            boot_order: 0x213,
+            preserve_fixed_proportions: true,
+            bios: { url: "bios/seabios.bin" },
+            vga_bios: { url: "bios/vgabios.bin" },
+            // initial_state: {
+            //     url: host + "v86state.bin",
+            // },
             hda: {
-                url: host + "windows98-new/.img",
+                url: host + "hda/.img",
                 size: 300 * 1024 * 1024,
                 async: true,
                 fixed_chunk_size: 256 * 1024,
                 use_parts: true,
             },
             hdb: {
-                blank: true,
-                size: 300 * 1024 * 1024,  // 300MB
+                url: host + "hdb/.img",
+                size: 300 * 1024 * 1024,
+                async: true,
+                fixed_chunk_size: 256 * 1024,
+                use_parts: true,
+            },
+            cdrom: {
+                url: host + "v86gl_install.iso",
+                size: 200704,
             },
             name: "Windows 98 (new)",
         },
@@ -2044,7 +2061,7 @@ async function start_emulation(profile, query_args) {
     if (profile) {
         set_title(profile.name);
 
-        settings.initial_state = profile.state;
+        settings.initial_state = profile.initial_state || profile.state;
         settings.filesystem = profile.filesystem;
         settings.fda = profile.fda;
         settings.fdb = profile.fdb;
@@ -2064,6 +2081,10 @@ async function start_emulation(profile, query_args) {
         settings.boot_order = profile.boot_order;
         settings.net_device_type = profile.net_device_type;
         settings.modem = profile.modem;
+        settings.bios = profile.bios;
+        settings.vga_bios = profile.vga_bios;
+        settings.preserve_fixed_proportions = profile.preserve_fixed_proportions;
+        settings.v86gl_pci = profile.v86gl_pci;
 
         if (!DEBUG && profile.homepage) {
             $("description").style.display = "block";
@@ -2306,8 +2327,9 @@ async function start_emulation(profile, query_args) {
 
     trace("Main", "creating V86, bios=" + (settings.bios ? JSON.stringify(settings.bios) : "null") +
         " initial_state=" + (settings.initial_state ? "yes" : "no"));
+    const useV86GL = profile?.v86gl;
     const emulator = new V86({
-        wasm_path: "build/" + (DEBUG ? "v86-debug.wasm" : "v86.wasm") + query_append(),
+        wasm_path: "build/" + (useV86GL ? "v86gl.wasm" : (DEBUG ? "v86-debug.wasm" : "v86.wasm")) + query_append(),
         screen: {
             container: $("screen_container"),
             use_graphical_text: false,
@@ -2341,10 +2363,12 @@ async function start_emulation(profile, query_args) {
         acpi: settings.acpi,
         disable_jit: settings.disable_jit,
         initial_state: settings.initial_state,
-        filesystem: settings.filesystem || {},
+        filesystem: settings.filesystem || undefined,
         disable_speaker: settings.disable_audio,
         mac_address_translation: settings.mac_address_translation,
         cpuid_level: settings.cpuid_level,
+        v86gl_pci: settings.v86gl_pci || (useV86GL ? { port: 0xF100, maxBatchBytes: 16 * 1024 * 1024 } : undefined),
+        preserve_fixed_proportions: settings.preserve_fixed_proportions,
     });
 
     // Expose for debugging
@@ -2407,6 +2431,45 @@ async function start_emulation(profile, query_args) {
         }
 
         init_ui(profile, settings, emulator, diskKeys, persistEnabled);
+
+        // Initialize v86gl OpenGL bridge if enabled
+        if(useV86GL) {
+            try {
+                // Load gl4es and bridge scripts if not already loaded
+                const scripts = [
+                    ["build/gl4es.js", "createV86GL4ES"],
+                    ["build/gl4es_loader.js", "resetV86GL4ESRenderer"],
+                    ["build/d3d8_executor.js", "installD3D8WebGPUExecutor"],
+                    ["build/d3d9_shader_pipeline.js", "D3D9ShaderPipeline"],
+                    ["build/d3d9_executor.js", "installD3D9WebGPUExecutor"],
+                    ["build/v86_network_bridge.js", "installV86GLNetworkBridge"],
+                ];
+                for(const [src, globalName] of scripts) {
+                    if(typeof window[globalName] === "undefined") {
+                        await new Promise((resolve, reject) => {
+                            const s = document.createElement("script");
+                            s.src = src;
+                            s.onload = resolve;
+                            s.onerror = reject;
+                            document.head.appendChild(s);
+                        });
+                    }
+                }
+
+                const glCanvas = document.getElementById("v86gl_canvas");
+                const d3dCanvas = document.getElementById("d3d_webgpu_canvas");
+                if(glCanvas && typeof installV86GLNetworkBridge === "function") {
+                    window.v86gl_bridge = installV86GLNetworkBridge(emulator, glCanvas, {
+                        gl4es: window.GL4ES,
+                        d3dCanvas: d3dCanvas,
+                    });
+                    window.v86gl = window.v86gl_bridge;
+                    console.log("[v86gl] bridge initialized");
+                }
+            } catch(e) {
+                console.warn("[v86gl] bridge initialization failed:", e);
+            }
+        }
 
         if (query_args?.has("c")) {
             setTimeout(function () {

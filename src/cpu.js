@@ -33,6 +33,7 @@ import { IDEController } from "./ide.js";
 import { VirtioNet } from "./virtio_net.js";
 import { VGAScreen } from "./vga.js";
 import { VirtioBalloon } from "./virtio_balloon.js";
+import { V86GLPCI } from "./v86gl_pci.js";
 import { Virtio9p, Virtio9pHandler, Virtio9pProxy } from "../lib/9p.js";
 
 import { load_kernel } from "./kernel.js";
@@ -52,6 +53,7 @@ import {
 // For Types Only
 
 import { BusConnector } from "./bus.js";
+import { trace } from "./browser/trace.js";
 
 // Resources:
 // https://pdos.csail.mit.edu/6.828/2006/readings/i386/toc.htm
@@ -570,6 +572,7 @@ CPU.prototype.get_state = function()
     state[89] = this.devices.vmware;
     state[90] = this.devices.parallel0;
     state[91] = this.devices.parallel1;
+    state[92] = this.devices.v86gl_pci;
 
     return state;
 };
@@ -740,6 +743,7 @@ CPU.prototype.set_state = function(state)
     this.devices.vmware && state[89] && this.devices.vmware.set_state(state[89]);
     this.devices.parallel0 && state[90] && this.devices.parallel0.set_state(state[90]);
     this.devices.parallel1 && state[91] && this.devices.parallel1.set_state(state[91]);
+    this.devices.v86gl_pci && state[92] && this.devices.v86gl_pci.set_state(state[92]);
 
     this.fw_value = state[62];
 
@@ -931,12 +935,15 @@ CPU.prototype.unpack_memory = function(bitmap, packed_memory)
 
 CPU.prototype.reboot_internal = function()
 {
+    trace("CPU", "reboot_internal: resetting CPU (caller: " +
+        (new Error().stack.split("\n")[2] || "unknown").trim() + ")");
     this.reset_cpu();
 
     this.fw_value = [];
 
     if(this.devices.virtio_9p)
     {
+        trace("CPU", "reboot_internal: reset virtio_9p");
         this.devices.virtio_9p.reset();
     }
     if(this.devices.virtio_console)
@@ -949,15 +956,15 @@ CPU.prototype.reboot_internal = function()
     }
     if(this.devices.ps2)
     {
+        trace("CPU", "reboot_internal: reset PS2");
         this.devices.ps2.reset();
     }
 
     // Reset VGA: disable SVGA/Bochs VBE mode so the BIOS can reinitialize
-    // the display to text mode. Without this, the VGA stays in the graphical
-    // mode set by the guest OS and the BIOS POST output (and subsequent boot)
-    // appears as a black screen.
+    // the display to text mode.
     if(this.devices.vga)
     {
+        trace("CPU", "reboot_internal: reset VGA");
         const vga = this.devices.vga;
         vga.svga_enabled = false;
         vga.svga_bank_offset = 0;
@@ -992,6 +999,10 @@ CPU.prototype.reboot_internal = function()
         vga.dac_map.fill(0);
         vga.vga_memory.fill(0);
         vga.svga_memory.fill(0);
+        if(vga.screen && vga.screen.set_mode)
+        {
+            vga.screen.set_mode(false);
+        }
         vga.set_size_text(vga.max_cols, vga.max_rows);
         vga.complete_redraw();
     }
@@ -999,6 +1010,7 @@ CPU.prototype.reboot_internal = function()
     // Reset IDE controller registers (disk buffers/data are preserved)
     if(this.devices.ide)
     {
+        trace("CPU", "reboot_internal: reset IDE");
         const ide = this.devices.ide;
         if(ide.primary)
         {
@@ -1019,10 +1031,298 @@ CPU.prototype.reboot_internal = function()
     // Reset floppy controller
     if(this.devices.fdc)
     {
+        trace("CPU", "reboot_internal: reset FDC");
         this.devices.fdc.reset_fdc();
     }
 
+    if(this.devices.v86gl_pci)
+    {
+        this.devices.v86gl_pci.reset();
+    }
+
+    // Reset all remaining devices that have reset methods
+    if(this.devices.pit)
+    {
+        trace("CPU", "reboot_internal: reset PIT");
+        this.devices.pit.reset();
+    }
+    if(this.devices.rtc)
+    {
+        trace("CPU", "reboot_internal: reset RTC");
+        this.devices.rtc.reset();
+        // Re-fill CMOS with hardware config (memory size, boot order, etc.)
+        // since RTC.reset() cleared it.
+        if(this._settings)
+        {
+            this.fill_cmos(this.devices.rtc, this._settings);
+        }
+    }
+    if(this.devices.dma)
+    {
+        trace("CPU", "reboot_internal: reset DMA");
+        this.devices.dma.reset();
+    }
+    if(this.devices.pci)
+    {
+        this.devices.pci.reset();
+    }
+    if(this.devices.uart0) this.devices.uart0.reset();
+    if(this.devices.uart1) this.devices.uart1.reset();
+    if(this.devices.uart2) this.devices.uart2.reset();
+    if(this.devices.uart3) this.devices.uart3.reset();
+    if(this.devices.sb16)
+    {
+        trace("CPU", "reboot_internal: reset SB16");
+        this.devices.sb16.reset();
+    }
+    if(this.devices.net)
+    {
+        this.devices.net.reset();
+    }
+    if(this.devices.virtio_balloon)
+    {
+        this.devices.virtio_balloon.reset();
+    }
+    if(this.devices.acpi)
+    {
+        this.devices.acpi.status = 1;
+        this.devices.acpi.pm1_status = 0;
+        this.devices.acpi.pm1_enable = 0;
+    }
+
+    // Note: We do NOT clear RAM here. Clearing RAM zeroes the IDT that
+    // the previous OS set up. When BIOS briefly enters protected mode
+    // during POST and executes INT3, it looks up the IDT; with all-zero
+    // descriptors the selector is 0 (null), causing a panic in the
+    // unimplemented #GP handler. Leaving RAM intact means the previous
+    // IDT remains valid until BIOS replaces it with its own.
+    // Disk dirty blocks are preserved separately in block_cache.
+
+    this.shutdown_requested = false;
+    this.reboot_requested = false;
+
+    trace("CPU", "reboot_internal: loading BIOS");
     this.load_bios();
+    trace("CPU", "reboot_internal: done");
+};
+
+/**
+ * Full power-on reset: reset CPU and ALL devices to their initial
+ * power-on state. Disk buffers/data are preserved, but all device
+ * registers and CPU state are reset. After this call, the system is
+ * ready to boot from BIOS as if it was just powered on.
+ */
+CPU.prototype.power_on_reset = function()
+{
+    trace("CPU", "power_on_reset: beginning full reset, bios.main=" +
+          (this.bios.main ? this.bios.main.byteLength + " bytes" : "null"));
+
+    // 1. Reset CPU core (registers, cache, mode, etc.)
+    this.reset_cpu();
+    this.fw_value = [];
+
+    // 2. Clear conventional memory (0 - 640K) for a cold boot.
+    // We don't clear extended memory because:
+    // - VGA framebuffer at 0xA0000-0xBFFFF is mmap'd and reset by VGA
+    // - BIOS area at 0xF0000-0xFFFFF is reloaded by load_bios()
+    // - Some BIOS/option ROMs may expect extended memory to retain data
+    trace("CPU", "power_on_reset: clearing conventional RAM (0-640K)");
+    this.mem8.fill(0, 0, 0xA0000);
+
+    // Note: mmap-registered regions (VGA framebuffer, PCI ROMs, etc.)
+    // are backed by separate buffers and are not affected by mem8.fill.
+    // They are reset individually by their respective device resets.
+
+    // 2. Reset all devices
+    if(this.devices.pci)
+    {
+        trace("CPU", "power_on_reset: reset PCI");
+        this.devices.pci.reset();
+    }
+    if(this.devices.pit)
+    {
+        trace("CPU", "power_on_reset: reset PIT");
+        this.devices.pit.reset();
+    }
+    if(this.devices.rtc)
+    {
+        trace("CPU", "power_on_reset: reset RTC");
+        this.devices.rtc.reset();
+        // Re-fill CMOS with hardware config (memory size, boot order, etc.)
+        // since RTC.reset() cleared it.
+        if(this._settings)
+        {
+            trace("CPU", "power_on_reset: filling CMOS, memory_size=" +
+                  this._settings.memory_size);
+            this.fill_cmos(this.devices.rtc, this._settings);
+        }
+        else
+        {
+            trace("CPU", "power_on_reset: WARNING - no _settings, CMOS not filled");
+        }
+    }
+    if(this.devices.dma)
+    {
+        trace("CPU", "power_on_reset: reset DMA");
+        this.devices.dma.reset();
+    }
+    if(this.devices.vga)
+    {
+        trace("CPU", "power_on_reset: reset VGA");
+        const vga = this.devices.vga;
+        vga.svga_enabled = false;
+        vga.svga_bank_offset = 0;
+        vga.svga_offset = 0;
+        vga.svga_offset_x = 0;
+        vga.svga_offset_y = 0;
+        vga.svga_width = 0;
+        vga.svga_height = 0;
+        vga.dispi_enable_value = 0;
+        vga.graphical_mode = false;
+        vga.crtc.fill(0);
+        vga.crtc_mode = 0;
+        vga.start_address = 0;
+        vga.start_address_latched = 0;
+        vga.offset_register = 0;
+        vga.plane_write_bm = 0xF;
+        vga.miscellaneous_output_register = 0xFF;
+        vga.sequencer_memory_mode = 0;
+        vga.clocking_mode = 0;
+        vga.attribute_controller_index = -1;
+        vga.palette_source = 0x20;
+        vga.attribute_mode = 0;
+        vga.color_plane_enable = 0;
+        vga.graphics_index = -1;
+        vga.plane_read = 0;
+        vga.planar_mode = 0;
+        vga.planar_rotate_reg = 0;
+        vga.planar_bitmap = 0xFF;
+        vga.planar_setreset = 0;
+        vga.planar_setreset_enable = 0;
+        vga.miscellaneous_graphics_register = 0;
+        vga.latch_dword = 0;
+        vga.dac_mask = 0xFF;
+        vga.dac_state = 0;
+        vga.dac_map.fill(0);
+        vga.vga256_palette.fill(0);
+        vga.vga_memory.fill(0);
+        vga.svga_memory.fill(0);
+        vga.svga_version = 0xB0C5;
+        vga.cursor_enabled = false;
+        vga.cursor_address = 0;
+        vga.cursor_scanline_start = 0xE;
+        vga.cursor_scanline_end = 0xF;
+        vga.scan_line = 0;
+        vga.line_compare = 0;
+        vga.color_compare = 0;
+        vga.color_dont_care = 0;
+        vga.color_plane_enable = 0;
+        if(vga.screen && vga.screen.set_mode)
+        {
+            vga.screen.set_mode(false);
+        }
+        // Reset canvas dimensions so the guest OS sets them fresh
+        if(vga.screen && vga.screen.reset_graphic)
+        {
+            vga.screen.reset_graphic();
+        }
+        vga.set_size_text(vga.max_cols, vga.max_rows);
+        vga.complete_redraw();
+    }
+    if(this.devices.ps2)
+    {
+        trace("CPU", "power_on_reset: reset PS2");
+        this.devices.ps2.reset();
+    }
+    if(this.devices.ide)
+    {
+        trace("CPU", "power_on_reset: reset IDE");
+        const ide = this.devices.ide;
+        if(ide.primary)
+        {
+            ide.primary.master.device_reset();
+            ide.primary.slave.device_reset();
+            ide.primary.device_control_reg = 0;
+            ide.primary.current_interface = ide.primary.master;
+        }
+        if(ide.secondary)
+        {
+            ide.secondary.master.device_reset();
+            ide.secondary.slave.device_reset();
+            ide.secondary.device_control_reg = 0;
+            ide.secondary.current_interface = ide.secondary.master;
+        }
+    }
+    if(this.devices.fdc)
+    {
+        trace("CPU", "power_on_reset: reset FDC");
+        this.devices.fdc.reset_fdc();
+    }
+    if(this.devices.uart0)
+    {
+        trace("CPU", "power_on_reset: reset UART0");
+        this.devices.uart0.reset();
+    }
+    if(this.devices.uart1)
+    {
+        this.devices.uart1.reset();
+    }
+    if(this.devices.uart2)
+    {
+        this.devices.uart2.reset();
+    }
+    if(this.devices.uart3)
+    {
+        this.devices.uart3.reset();
+    }
+    if(this.devices.sb16)
+    {
+        trace("CPU", "power_on_reset: reset SB16");
+        this.devices.sb16.reset();
+    }
+    if(this.devices.net)
+    {
+        trace("CPU", "power_on_reset: reset NE2K");
+        this.devices.net.reset();
+    }
+    if(this.devices.virtio_9p)
+    {
+        this.devices.virtio_9p.reset();
+    }
+    if(this.devices.virtio_console)
+    {
+        this.devices.virtio_console.reset();
+    }
+    if(this.devices.virtio_net)
+    {
+        this.devices.virtio_net.reset();
+    }
+    if(this.devices.virtio_balloon)
+    {
+        this.devices.virtio_balloon.reset();
+    }
+    if(this.devices.acpi)
+    {
+        trace("CPU", "power_on_reset: reset ACPI");
+        this.devices.acpi.status = 1;
+        this.devices.acpi.pm1_status = 0;
+        this.devices.acpi.pm1_enable = 0;
+    }
+
+    // 3. Clear shutdown/reboot request flags
+    this.shutdown_requested = false;
+    this.reboot_requested = false;
+
+    // 4. Load BIOS and verify
+    trace("CPU", "power_on_reset: loading BIOS");
+    this.load_bios();
+
+    // Verify BIOS is loaded at reset vector
+    const reset_byte = this.mem8[0xFFFF0];
+    const bios_start = this.mem8[0x100000 - (this.bios.main ? this.bios.main.byteLength : 0)];
+    trace("CPU", "power_on_reset: BIOS at 0xFFFF0=" + h(reset_byte) +
+          " CS=0xF000 IP=0xFFF0, BIOS size=" + (this.bios.main ? this.bios.main.byteLength : 0));
+    trace("CPU", "power_on_reset: complete");
 };
 
 CPU.prototype.reset_memory = function()
@@ -1062,6 +1362,9 @@ CPU.prototype.create_memory = function(size, minimum_size)
  */
 CPU.prototype.init = function(settings, device_bus)
 {
+    // Save settings for re-initialization on power_on_reset
+    this._settings = settings;
+
     this.create_memory(
         settings.memory_size || 64 * 1024 * 1024,
         settings.initrd ? 64 * 1024 * 1024 : 1024 * 1024,
@@ -1083,6 +1386,8 @@ CPU.prototype.init = function(settings, device_bus)
 
     this.bios.main = settings.bios;
     this.bios.vga = settings.vga_bios;
+    trace("CPU", "init: bios.main=" + (settings.bios ? settings.bios.byteLength + " bytes" : "null") +
+          " vga_bios=" + (settings.vga_bios ? settings.vga_bios.byteLength + " bytes" : "null"));
 
     this.load_bios();
 
@@ -1239,6 +1544,12 @@ CPU.prototype.init = function(settings, device_bus)
     {
         this.devices.pci = new PCI(this);
 
+        if(settings.v86gl_pci)
+        {
+            const v86gl_pci_options = typeof settings.v86gl_pci === "object" ? settings.v86gl_pci : {};
+            this.devices.v86gl_pci = new V86GLPCI(this, device_bus, v86gl_pci_options);
+        }
+
         if(this.acpi_enabled[0])
         {
             this.devices.acpi = new ACPI(this);
@@ -1327,13 +1638,19 @@ CPU.prototype.init = function(settings, device_bus)
     // APM/ACPI shutdown ports
     // SeaBIOS (CONFIG_QEMU) uses port 0x604 for power-off
     // Bochs and some APM implementations use port 0x8900
+    // Old QEMU uses port 0x9999
+    this.shutdown_requested = false;
+    this.reboot_requested = false;
     const shutdown_handler = function(value)
     {
-        dbg_log("Guest OS shutdown via I/O port, value=" + h(value), LOG_CPU);
+        console.log("[v86] Shutdown signal received on I/O port, value=" + value.toString(16));
+        this.shutdown_requested = true;
         this.bus.send("emulator-shutdown");
     };
     this.io.register_write(0x604, this, shutdown_handler, shutdown_handler, shutdown_handler);
     this.io.register_write(0x8900, this, shutdown_handler, shutdown_handler, shutdown_handler);
+    this.io.register_write(0x3c00, this, shutdown_handler, shutdown_handler, shutdown_handler);
+    this.io.register_write(0x9999, this, shutdown_handler, shutdown_handler, shutdown_handler);
 
     if(settings.multiboot)
     {
@@ -1774,6 +2091,7 @@ CPU.prototype.load_bios = function()
     if(!bios)
     {
         dbg_log("Warning: No BIOS");
+        trace("CPU", "load_bios: WARNING - no BIOS loaded!");
         return;
     }
 
@@ -1783,11 +2101,16 @@ CPU.prototype.load_bios = function()
     var data = new Uint8Array(bios),
         start = 0x100000 - bios.byteLength;
 
+    trace("CPU", "load_bios: writing " + bios.byteLength + " bytes at 0x" +
+          start.toString(16) + ", first byte=0x" + data[0].toString(16));
     this.write_blob(data, start);
+    trace("CPU", "load_bios: verify at 0xFFFF0=0x" + this.mem8[0xFFFF0].toString(16));
 
     if(vga_bios)
     {
         dbg_assert(vga_bios instanceof ArrayBuffer);
+
+        trace("CPU", "load_bios: loading VGA BIOS (" + vga_bios.byteLength + " bytes) at 0xC0000");
 
         // load vga bios
         var vga_bios8 = new Uint8Array(vga_bios);

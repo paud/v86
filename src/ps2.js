@@ -832,8 +832,11 @@ PS2.prototype.port64_write = function(write_byte)
         this.command_register &= ~0x10;
         break;
     case 0xFE:
-        dbg_log("CPU reboot via PS2");
-        this.cpu.reboot_internal();
+        dbg_log("CPU reboot via PS2", LOG_PS2);
+        // Defer the reboot until the current instruction batch
+        // finishes. Calling reboot_internal() from inside an IO write
+        // handler can corrupt JIT/interpreter state.
+        this.cpu.reboot_requested = true;
         break;
     default:
         dbg_log("port 64: Unimplemented command byte: " + h(write_byte), LOG_PS2);

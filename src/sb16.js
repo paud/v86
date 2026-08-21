@@ -302,6 +302,12 @@ SB16.prototype.dsp_reset = function()
     this.asp_registers[9] = 0xF8;
 };
 
+SB16.prototype.reset = function()
+{
+    this.dsp_reset();
+    this.mixer_reset();
+};
+
 SB16.prototype.get_state = function()
 {
     var state = [];

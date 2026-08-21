@@ -1124,6 +1124,32 @@ Ne2k.prototype.set_state = function(state)
     this.bus.send("net" + this.id + "-mac", format_mac(this.mac));
 };
 
+Ne2k.prototype.reset = function()
+{
+    this.isr = ENISR_RESET;
+    this.imr = 0;
+    this.cr = 1; // page 0, stopped
+    this.dcfg = 0;
+    this.rcnt = 0;
+    this.tcnt = 0;
+    this.tpsr = 0;
+    this.rsar = 0;
+    this.rxcr = 0;
+    this.txcr = 0;
+    this.tsr = 1;
+    this.curpg = START_RX_PAGE;
+    this.boundary = START_RX_PAGE;
+    this.memory.fill(0);
+    // Restore MAC PROM
+    for(var i = 0; i < 6; i++)
+    {
+        this.memory[i << 1] = this.memory[i << 1 | 1] = this.mac[i];
+    }
+    this.memory[14 << 1] = this.memory[14 << 1 | 1] = 0x57;
+    this.memory[15 << 1] = this.memory[15 << 1 | 1] = 0x57;
+    this.do_interrupt(ENISR_RESET);
+};
+
 Ne2k.prototype.do_interrupt = function(ir_mask)
 {
     dbg_log("Do interrupt " + h(ir_mask, 2), LOG_NET);

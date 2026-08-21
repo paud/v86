@@ -1,0 +1,10 @@
+LIBRARY d3d8
+EXPORTS
+    Direct3DCreate8=Direct3DCreate8@4
+; The real d3d8.dll exports these alongside Direct3DCreate8. A title that
+; statically imports any of them fails to LOAD against a DLL that omits them,
+; which surfaces as a generic "unable to initialize DirectX" with no chance to
+; run -- Direct3DCreate8 is never reached. Warcraft III is such a title.
+    ValidateVertexShader=ValidateVertexShader@20
+    ValidatePixelShader=ValidatePixelShader@16
+    DebugSetMute=DebugSetMute@0

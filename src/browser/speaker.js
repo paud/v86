@@ -756,6 +756,10 @@ function SpeakerWorkletDAC(bus, audio_context, mixer)
     {
         worklet_code = "var DEBUG = true;\n" + worklet_code;
     }
+    else
+    {
+        worklet_code = "var DEBUG = false;\n" + worklet_code;
+    }
 
     var worklet_blob = new Blob([worklet_code], { type: "application/javascript" });
     var worklet_url = URL.createObjectURL(worklet_blob);

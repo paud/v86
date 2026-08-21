@@ -141,6 +141,24 @@ DMA.prototype.set_state = function(state)
     this.lsb_msb_flipflop = state[8];
 };
 
+DMA.prototype.reset = function()
+{
+    this.channel_page.fill(0);
+    this.channel_pagehi.fill(0);
+    this.channel_addr.fill(0);
+    this.channel_addr_init.fill(0);
+    this.channel_count.fill(0);
+    this.channel_count_init.fill(0);
+    this.channel_mask.fill(0);
+    this.channel_mode.fill(0);
+    this.lsb_msb_flipflop = 0;
+    // Mask all channels (master DMA)
+    this.channel_mask[0] = 4;
+    this.channel_mask[1] = 4;
+    this.channel_mask[2] = 4;
+    this.channel_mask[3] = 4;
+};
+
 DMA.prototype.port_count_write = function(channel, data_byte)
 {
     dbg_log("count write [" + channel + "] = " + h(data_byte), LOG_DMA);

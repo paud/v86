@@ -1,0 +1,131 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>ARB program browser test: running</title>
+<canvas id="v86gl_canvas" width="64" height="64"></canvas>
+<pre id="result">running</pre>
+<script src="../libglwasm/gl4es.js?v=webgl-clean-v1-20260801"></script>
+<script>
+(async () => {
+    "use strict";
+
+    const GL_COLOR_BUFFER_BIT = 0x00004000;
+    const GL_TRIANGLES = 0x0004;
+    const GL_RGBA = 0x1908;
+    const GL_UNSIGNED_BYTE = 0x1401;
+    const GL_FRAGMENT_PROGRAM_ARB = 0x8804;
+    const GL_PROGRAM_LENGTH_ARB = 0x8627;
+    const GL_PROGRAM_STRING_ARB = 0x8628;
+    const GL_PROGRAM_FORMAT_ASCII_ARB = 0x8875;
+    const GL_INVALID_VALUE = 0x0501;
+    const GL_MAX_PROGRAM_NATIVE_PARAMETERS_ARB = 0x88AB;
+    const GL_MAX_PROGRAM_LOCAL_PARAMETERS_ARB = 0x88B4;
+    const GL_MAX_PROGRAM_ENV_PARAMETERS_ARB = 0x88B5;
+    const V86GL_PROGRAM_PARAMETER_ENV = 1;
+    const source = "!!ARBfp1.0\n" +
+        "PARAM edge = program.env[27];\n" +
+        "MOV result.color, edge;\nEND";
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    const module = await createV86GL4ES({
+        canvas: document.getElementById("v86gl_canvas"),
+        locateFile(path) {
+            return `../libglwasm/${path}?v=webgl-clean-v1-20260801`;
+        },
+    });
+
+    module._v86glMakeCurrent(1, 0, 0, 64, 64);
+    const namePtr = module._malloc(4);
+    new DataView(module.HEAPU8.buffer).setUint32(namePtr, 1, true);
+    module._v86gl_glGenProgramsARBMapped(1, namePtr);
+    module._v86gl_glBindProgramARBMapped(GL_FRAGMENT_PROGRAM_ARB, 1);
+
+    const sourceBytes = encoder.encode(source);
+    const sourcePtr = module._malloc(sourceBytes.length);
+    module.HEAPU8.set(sourceBytes, sourcePtr);
+    module._v86gl_glProgramStringARB(GL_FRAGMENT_PROGRAM_ARB,
+        GL_PROGRAM_FORMAT_ASCII_ARB, sourceBytes.length, sourcePtr);
+
+    const valuePtr = module._malloc(16);
+    const values = new Float32Array(module.HEAPU8.buffer, valuePtr, 4);
+    values.set([1, 0, 0, 1]);
+    module._v86gl_glProgramParameterfvARB(V86GL_PROGRAM_PARAMETER_ENV,
+        GL_FRAGMENT_PROGRAM_ARB, 27, 1, valuePtr);
+    module._v86gl_glGetProgramParameterfvARB(V86GL_PROGRAM_PARAMETER_ENV,
+        GL_FRAGMENT_PROGRAM_ARB, 27, valuePtr);
+    if (Array.from(values).join(",") !== "1,0,0,1") {
+        throw new Error(`fragment program.env[27] round-trip failed: ${Array.from(values)}`);
+    }
+
+    values.set([0, 1, 0, 1]);
+    module._v86gl_glProgramParameterfvARB(V86GL_PROGRAM_PARAMETER_ENV,
+        GL_FRAGMENT_PROGRAM_ARB, 28, 1, valuePtr);
+    const boundaryError = module._v86gl_glQueryError();
+    if (boundaryError !== GL_INVALID_VALUE) {
+        throw new Error(`program.env[28] returned 0x${boundaryError.toString(16)}, expected GL_INVALID_VALUE`);
+    }
+
+    const lengthPtr = module._malloc(4);
+    const limitNames = [
+        ["env", GL_MAX_PROGRAM_ENV_PARAMETERS_ARB],
+        ["native", GL_MAX_PROGRAM_NATIVE_PARAMETERS_ARB],
+        ["local", GL_MAX_PROGRAM_LOCAL_PARAMETERS_ARB],
+    ];
+    for (const [name, pname] of limitNames) {
+        if (!module._v86gl_glGetProgramivARB(GL_FRAGMENT_PROGRAM_ARB,
+                pname, lengthPtr)) {
+            throw new Error(`fragment ${name}-parameter limit query failed`);
+        }
+        const limit = new DataView(module.HEAPU8.buffer)
+            .getInt32(lengthPtr, true);
+        if (limit !== 28) {
+            throw new Error(`fragment ${name}-parameter limit is ${limit}, expected 28`);
+        }
+    }
+    const fragmentEnvParams = 28;
+    if (!module._v86gl_glGetProgramivARB(GL_FRAGMENT_PROGRAM_ARB,
+            GL_PROGRAM_LENGTH_ARB, lengthPtr)) {
+        throw new Error("program length query failed");
+    }
+    const programLength = new DataView(module.HEAPU8.buffer).getInt32(lengthPtr, true);
+    if (programLength !== sourceBytes.length) {
+        throw new Error(`program length changed: ${programLength}`);
+    }
+    const queriedPtr = module._malloc(programLength);
+    module._v86gl_glGetProgramStringARB(GL_FRAGMENT_PROGRAM_ARB,
+        GL_PROGRAM_STRING_ARB, programLength, lengthPtr, queriedPtr);
+    const queried = decoder.decode(module.HEAPU8.subarray(
+        queriedPtr, queriedPtr + programLength));
+    if (queried !== source) {
+        throw new Error("guest-visible ARB source changed");
+    }
+
+    module._v86gl_glViewport(0, 0, 64, 64);
+    module._v86gl_glClearColor(0, 0, 0, 1);
+    module._v86gl_glClear(GL_COLOR_BUFFER_BIT);
+    module._v86gl_glEnable(GL_FRAGMENT_PROGRAM_ARB);
+    module._v86gl_glBegin(GL_TRIANGLES);
+    module._v86gl_glVertex3f(-1, -1, 0);
+    module._v86gl_glVertex3f(1, -1, 0);
+    module._v86gl_glVertex3f(0, 1, 0);
+    module._v86gl_glEnd();
+    module._v86gl_glFinish();
+
+    const pixelPtr = module._malloc(4);
+    if (!module._v86gl_glReadPixels(32, 32, 1, 1,
+            GL_RGBA, GL_UNSIGNED_BYTE, pixelPtr)) {
+        throw new Error("readback failed");
+    }
+    const pixel = Array.from(module.HEAPU8.subarray(pixelPtr, pixelPtr + 4));
+    if (pixel[0] < 200 || pixel[1] > 20 || pixel[2] > 20 || pixel[3] < 200) {
+        throw new Error(`unexpected pixel ${pixel.join(",")}`);
+    }
+
+    document.title = "ARB program browser test: PASS";
+    document.getElementById("result").textContent =
+        `PASS env=${fragmentEnvParams} pixel=${pixel.join(",")}`;
+})().catch(error => {
+    document.title = "ARB program browser test: FAIL";
+    document.getElementById("result").textContent = `FAIL ${error.stack || error}`;
+    throw error;
+});
+</script>

@@ -1,0 +1,227 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>OpenGL FBO blit browser test: running</title>
+<canvas id="v86gl_canvas" width="64" height="64"></canvas>
+<pre id="result">running</pre>
+<script src="../libglwasm/gl4es.js?v=webgl-clean-v1-20260801"></script>
+<script>
+(async () => {
+    "use strict";
+
+    const GL_FRAMEBUFFER = 0x8D40;
+    const GL_READ_FRAMEBUFFER = 0x8CA8;
+    const GL_DRAW_FRAMEBUFFER = 0x8CA9;
+    const GL_RENDERBUFFER = 0x8D41;
+    const GL_COLOR_ATTACHMENT0 = 0x8CE0;
+    const GL_TEXTURE_2D = 0x0DE1;
+    const GL_TEXTURE_MIN_FILTER = 0x2801;
+    const GL_TEXTURE_MAG_FILTER = 0x2800;
+    const GL_NONE = 0;
+    const GL_BACK = 0x0405;
+    const GL_FRAMEBUFFER_COMPLETE = 0x8CD5;
+    const GL_RGBA8 = 0x8058;
+    const GL_RGBA = 0x1908;
+    const GL_UNSIGNED_BYTE = 0x1401;
+    const GL_COLOR_BUFFER_BIT = 0x4000;
+    const GL_NEAREST = 0x2600;
+
+    const module = await createV86GL4ES({
+        canvas: document.getElementById("v86gl_canvas"),
+        locateFile(path) {
+            return `../libglwasm/${path}?v=webgl-clean-v1-20260801`;
+        },
+    });
+
+    function namePtr(name) {
+        const ptr = module._malloc(4);
+        new DataView(module.HEAPU8.buffer).setUint32(ptr, name, true);
+        return ptr;
+    }
+
+    function assertNoError(label) {
+        const error = module._v86gl_glQueryError();
+        if (error) {
+            throw new Error(`${label}: GL error 0x${error.toString(16)}`);
+        }
+    }
+
+    function createColorFbo(framebuffer, renderbuffer) {
+        module._v86gl_glGenFramebuffersMapped(1, namePtr(framebuffer));
+        module._v86gl_glGenRenderbuffersMapped(1, namePtr(renderbuffer));
+        module._v86gl_glBindFramebufferMapped(GL_FRAMEBUFFER, framebuffer);
+        module._v86gl_glBindRenderbufferMapped(GL_RENDERBUFFER, renderbuffer);
+        module._v86gl_glRenderbufferStorageMapped(
+            GL_RENDERBUFFER, GL_RGBA8, 64, 64);
+        module._v86gl_glFramebufferRenderbufferMapped(
+            GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+            GL_RENDERBUFFER, renderbuffer);
+        const status =
+            module._v86gl_glCheckFramebufferStatusMapped(GL_FRAMEBUFFER);
+        if (status !== GL_FRAMEBUFFER_COMPLETE) {
+            throw new Error(`FBO ${framebuffer}: status 0x${status.toString(16)}`);
+        }
+        assertNoError(`create FBO ${framebuffer}`);
+    }
+
+    function clearFbo(framebuffer, red, green, blue) {
+        module._v86gl_glBindFramebufferMapped(GL_FRAMEBUFFER, framebuffer);
+        module._v86gl_glViewport(0, 0, 64, 64);
+        module._v86gl_glClearColor(red, green, blue, 1);
+        module._v86gl_glClear(GL_COLOR_BUFFER_BIT);
+        assertNoError(`clear FBO ${framebuffer}`);
+    }
+
+    module._v86glMakeCurrent(1, 0, 0, 64, 64);
+    while (module._v86gl_glQueryError()) {}
+
+    createColorFbo(101, 201);
+    createColorFbo(102, 202);
+    clearFbo(101, 0.9, 0.1, 0.2);
+    clearFbo(102, 0.05, 0.2, 0.85);
+
+    /* WineD3D may cache separate framebuffer objects for drawing a surface
+     * and reading that same surface during Present.  Both FBOs must observe
+     * one texture attachment without an explicit copy. */
+    module._v86gl_glGenTextures(1, namePtr(203));
+    module._v86gl_glBindTexture(GL_TEXTURE_2D, 203);
+    module._v86gl_glTexParameteri(
+        GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    module._v86gl_glTexParameteri(
+        GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    module._v86gl_glTexImage2D(
+        GL_TEXTURE_2D, 0, GL_RGBA8, 64, 64, 0,
+        GL_RGBA, GL_UNSIGNED_BYTE, 0);
+    module._v86gl_glGenFramebuffersMapped(1, namePtr(103));
+    module._v86gl_glGenFramebuffersMapped(1, namePtr(104));
+    for (const framebuffer of [103, 104]) {
+        module._v86gl_glBindFramebufferMapped(GL_FRAMEBUFFER, framebuffer);
+        module._v86gl_glFramebufferTextureMapped(
+            GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+            GL_TEXTURE_2D, 203, 0, 0);
+        const status =
+            module._v86gl_glCheckFramebufferStatusMapped(GL_FRAMEBUFFER);
+        if (status !== GL_FRAMEBUFFER_COMPLETE) {
+            throw new Error(`shared texture FBO ${framebuffer}: ` +
+                `status 0x${status.toString(16)}`);
+        }
+    }
+    clearFbo(103, 0.2, 0.75, 0.35);
+    module._v86gl_glBindFramebufferMapped(GL_FRAMEBUFFER, 104);
+    const sharedPixelPtr = module._malloc(4);
+    if (!module._v86gl_glReadPixels(
+            32, 32, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, sharedPixelPtr)) {
+        throw new Error("shared texture readback failed");
+    }
+    const sharedPixel = Array.from(
+        module.HEAPU8.subarray(sharedPixelPtr, sharedPixelPtr + 4));
+    if (sharedPixel[0] < 35 || sharedPixel[0] > 70 ||
+            sharedPixel[1] < 175 || sharedPixel[1] > 210 ||
+            sharedPixel[2] < 70 || sharedPixel[2] > 110 ||
+            sharedPixel[3] < 240) {
+        throw new Error(`shared texture pixel mismatch ` +
+            `${sharedPixel.join(",")}`);
+    }
+    assertNoError("shared texture FBO visibility");
+
+    module._v86gl_glBindFramebufferMapped(GL_READ_FRAMEBUFFER, 104);
+    module._v86gl_glBindFramebufferMapped(GL_DRAW_FRAMEBUFFER, 0);
+    module._v86gl_glReadBuffer(GL_COLOR_ATTACHMENT0);
+    module._v86gl_glDrawBuffer(GL_BACK);
+    module._v86gl_glBlitFramebuffer(
+        0, 0, 64, 64, 0, 0, 64, 64,
+        GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    assertNoError("shared texture read-FBO present");
+
+    module._v86gl_glBindFramebufferMapped(GL_READ_FRAMEBUFFER, 101);
+    module._v86gl_glBindFramebufferMapped(GL_DRAW_FRAMEBUFFER, 102);
+    module._v86gl_glReadBuffer(GL_COLOR_ATTACHMENT0);
+    module._v86gl_glDrawBuffer(GL_NONE);
+    module._v86gl_glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    const readStatus =
+        module._v86gl_glCheckFramebufferStatusMapped(GL_READ_FRAMEBUFFER);
+    const drawStatus =
+        module._v86gl_glCheckFramebufferStatusMapped(GL_DRAW_FRAMEBUFFER);
+    if (readStatus !== GL_FRAMEBUFFER_COMPLETE ||
+            drawStatus !== GL_FRAMEBUFFER_COMPLETE) {
+        throw new Error(`split status read=0x${readStatus.toString(16)} ` +
+            `draw=0x${drawStatus.toString(16)}`);
+    }
+
+    const rawGl = document.getElementById("v86gl_canvas").getContext("webgl2");
+    if (!rawGl) throw new Error("WebGL2 context missing");
+    const rawRead = rawGl.getParameter(rawGl.READ_FRAMEBUFFER_BINDING);
+    const rawDraw = rawGl.getParameter(rawGl.DRAW_FRAMEBUFFER_BINDING);
+    if (!rawRead || !rawDraw || rawRead === rawDraw) {
+        throw new Error("READ/DRAW framebuffer bindings were not independent");
+    }
+    if (rawGl.getParameter(rawGl.READ_BUFFER) !== GL_COLOR_ATTACHMENT0 ||
+            rawGl.getParameter(rawGl.DRAW_BUFFER0) !== GL_COLOR_ATTACHMENT0) {
+        throw new Error("desktop read/draw buffer selectors did not reach WebGL2");
+    }
+
+    module._v86gl_glBlitFramebuffer(
+        0, 0, 64, 64, 0, 0, 64, 64,
+        GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    assertNoError("native framebuffer blit");
+
+    module._v86gl_glBindFramebufferMapped(GL_FRAMEBUFFER, 102);
+    const pixelPtr = module._malloc(4);
+    if (!module._v86gl_glReadPixels(
+            32, 32, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixelPtr)) {
+        throw new Error("destination readback failed");
+    }
+    const pixel = Array.from(module.HEAPU8.subarray(pixelPtr, pixelPtr + 4));
+    if (pixel[0] < 210 || pixel[1] > 45 || pixel[2] < 30 ||
+            pixel[2] > 75 || pixel[3] < 240) {
+        throw new Error(`blit pixel mismatch ${pixel.join(",")}`);
+    }
+
+    /* WineD3D Present blits its offscreen render target into framebuffer 0.
+     * OFFSCREEN_FRAMEBUFFER maps that name to Emscripten's explicit-swap FBO,
+     * so verify this distinct destination instead of assuming FBO -> FBO is
+     * sufficient coverage. */
+    module._v86gl_glBindFramebufferMapped(GL_READ_FRAMEBUFFER, 101);
+    module._v86gl_glBindFramebufferMapped(GL_DRAW_FRAMEBUFFER, 0);
+    module._v86gl_glReadBuffer(GL_COLOR_ATTACHMENT0);
+    module._v86gl_glDrawBuffer(GL_BACK);
+    module._v86gl_glBlitFramebuffer(
+        0, 0, 64, 64, 0, 0, 64, 64,
+        GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    assertNoError("native framebuffer-zero blit");
+    module._v86gl_glBindFramebufferMapped(GL_FRAMEBUFFER, 0);
+    const defaultPixelPtr = module._malloc(4);
+    if (!module._v86gl_glReadPixels(
+            32, 32, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, defaultPixelPtr)) {
+        throw new Error("framebuffer-zero readback failed");
+    }
+    const defaultPixel = Array.from(
+        module.HEAPU8.subarray(defaultPixelPtr, defaultPixelPtr + 4));
+    if (defaultPixel[0] < 210 || defaultPixel[1] > 45 ||
+            defaultPixel[2] < 30 || defaultPixel[2] > 75 ||
+            defaultPixel[3] < 240) {
+        throw new Error(`framebuffer-zero pixel mismatch ` +
+            `${defaultPixel.join(",")}`);
+    }
+
+    module._v86gl_glBindFramebufferMapped(GL_FRAMEBUFFER, 0);
+    module._v86gl_glDeleteRenderbuffersMapped(1, namePtr(201));
+    module._v86gl_glDeleteRenderbuffersMapped(1, namePtr(202));
+    module._v86gl_glDeleteFramebuffersMapped(1, namePtr(103));
+    module._v86gl_glDeleteFramebuffersMapped(1, namePtr(104));
+    module._v86gl_glDeleteFramebuffersMapped(1, namePtr(101));
+    module._v86gl_glDeleteFramebuffersMapped(1, namePtr(102));
+    module._v86gl_glDeleteTextures(1, namePtr(203));
+    assertNoError("cleanup");
+
+    document.title = "OpenGL FBO blit browser test: PASS";
+    document.getElementById("result").textContent =
+        `PASS shared-texture=${sharedPixel.join(",")} ` +
+        `split-bindings native-blit fbo=${pixel.join(",")} ` +
+        `default=${defaultPixel.join(",")}`;
+})().catch(error => {
+    document.title = "OpenGL FBO blit browser test: FAIL";
+    document.getElementById("result").textContent =
+        `FAIL ${error.stack || error}`;
+    throw error;
+});
+</script>

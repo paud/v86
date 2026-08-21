@@ -244,10 +244,18 @@ PCI.prototype.set_state = function(state)
         for(var bar_nr = 0; bar_nr < device.pci_bars.length; bar_nr++)
         {
             var value = space[(0x10 >> 2) + bar_nr];
+            var bar = device.pci_bars[bar_nr];
+
+            if(bar && bar.fixed)
+            {
+                // Legacy devices can expose a firmware-assigned BAR without a PnP guest driver.
+                // Keep the original port mapping when restoring an old snapshot.
+                space[(0x10 >> 2) + bar_nr] = bar.original_bar;
+                continue;
+            }
 
             if(value & 1)
             {
-                var bar = device.pci_bars[bar_nr];
                 var from = bar.original_bar & ~1 & 0xFFFF;
                 var to = value & ~1 & 0xFFFF;
                 this.set_io_bars(bar, from, to);
@@ -436,12 +444,23 @@ PCI.prototype.pci_write32 = function(address, written)
                 // io
                 dbg_assert(type === 1);
 
-                var from = space[space_addr] & ~1 & 0xFFFF;
-                var to = written & ~1 & 0xFFFF;
-                dbg_log("io bar changed from " + h(from >>> 0, 8) +
-                        " to " + h(to >>> 0, 8) + " size=" + bar.size, LOG_PCI);
-                this.set_io_bars(bar, from, to);
-                space[space_addr] = written | 1;
+                if(bar.fixed)
+                {
+                    // The guest may probe BAR size, but this legacy device has no PnP driver
+                    // to consume a relocated resource. Keep its firmware-assigned I/O range.
+                    space[space_addr] = (written | 3 | bar.size - 1) === -1
+                        ? ~(bar.size - 1) | type
+                        : bar.original_bar;
+                }
+                else
+                {
+                    var from = space[space_addr] & ~1 & 0xFFFF;
+                    var to = written & ~1 & 0xFFFF;
+                    dbg_log("io bar changed from " + h(from >>> 0, 8) +
+                            " to " + h(to >>> 0, 8) + " size=" + bar.size, LOG_PCI);
+                    this.set_io_bars(bar, from, to);
+                    space[space_addr] = written | 1;
+                }
             }
         }
         else

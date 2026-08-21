@@ -1,0 +1,17 @@
+LIBRARY d3d9
+EXPORTS
+    Direct3DCreate9=Direct3DCreate9@4
+; The real d3d9.dll exports these alongside Direct3DCreate9. A title that
+; statically imports any of them fails to LOAD against a DLL that omits them,
+; which surfaces as a generic "unable to initialize DirectX" with no chance to
+; run -- Direct3DCreate9 is never reached. The D3D8 path hit the equivalent
+; problem with Warcraft III's ValidateVertexShader/ValidatePixelShader
+; imports; D3DPERF_*/DebugSetMute are the D3D9-side risk.
+    DebugSetMute=DebugSetMute@0
+    D3DPERF_BeginEvent=D3DPERF_BeginEvent@8
+    D3DPERF_EndEvent=D3DPERF_EndEvent@0
+    D3DPERF_SetMarker=D3DPERF_SetMarker@8
+    D3DPERF_SetRegion=D3DPERF_SetRegion@8
+    D3DPERF_QueryRepeatFrame=D3DPERF_QueryRepeatFrame@0
+    D3DPERF_SetOptions=D3DPERF_SetOptions@4
+    D3DPERF_GetStatus=D3DPERF_GetStatus@0

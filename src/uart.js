@@ -329,6 +329,23 @@ UART.prototype.set_state = function(state)
     this.irq = state[10];
 };
 
+UART.prototype.reset = function()
+{
+    this.ints = 1 << UART_IIR_THRI;
+    this.baud_rate = 0;
+    this.line_control = 0;
+    this.lsr = UART_LSR_TRANSMITTER_EMPTY | UART_LSR_TX_EMPTY;
+    this.fifo_control = 0;
+    this.ier = 0;
+    this.iir = UART_IIR_NO_INT;
+    this.modem_control = 0;
+    this.modem_status = 0;
+    this.scratch_register = 0;
+    this.input = [];
+    this.current_line = "";
+    this.cpu.device_lower_irq(this.irq);
+};
+
 UART.prototype.CheckInterrupt = function()
 {
     if((this.ints & (1 << UART_IIR_CTI)) && (this.ier & UART_IER_RDI))

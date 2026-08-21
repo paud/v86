@@ -155,6 +155,13 @@ https://www.npmjs.com/package/v86
 - Follow the instructions from your development environment to setup the container.
 - Run the Task "Fetch images" in order to download images for testing.
 
+### About the `web/` directory
+
+The `web/` directory is for deployment only — please keep it clean. Do not edit
+files under `web/` directly; they are generated copies of the sources in the
+repository root (`src/`, `lib/`, `bios/`, `images/`, etc.). Edit the originals
+and re-run the build (`make` / `make all`) to refresh `web/`.
+
 ## Testing
 
 The disk images for testing are not included in this repository. You can
